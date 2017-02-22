@@ -1,0 +1,131 @@
+create table lzm_prpjrefrectmp
+as select t.CERTITYPE,t.CERTINO,t.REALPAYFEE,t.REALPAYDATE from (
+    select CERTITYPE,CERTINO,REALPAYFEE,REALPAYDATE
+        from   PRPJREFREC
+        where
+         '20160701'<= to_char(REALPAYDATE,'YYYYMMDD')
+        and to_char(REALPAYDATE,'YYYYMMDD')<='20160930'
+        and CERTITYPE = 'C'
+        union all
+        select CERTITYPE,CERTINO,REALPAYFEE,REALPAYDATE
+        from   PRPJREFREC
+        where
+         '20160701'<= to_char(REALPAYDATE,'YYYYMMDD')
+        and to_char(REALPAYDATE,'YYYYMMDD')<='20160930'
+        and CERTITYPE = ¡®Y¡¯ 
+    
+    union all
+    select CERTITYPE,CERTINO,REALPAYFEE,REALPAYDATE
+      from   PRPJREFRECHIS
+      where
+       '20160701'<= to_char(REALPAYDATE,'YYYYMMDD')
+      and to_char(REALPAYDATE,'YYYYMMDD')<='20160930'
+      and CERTITYPE = 'C'
+      union all
+      select CERTITYPE,CERTINO,REALPAYFEE,REALPAYDATE
+      from   PRPJREFRECHIS
+      where
+       '20160701'<= to_char(REALPAYDATE,'YYYYMMDD')
+      and to_char(REALPAYDATE,'YYYYMMDD')<='20160930'
+      and CERTITYPE = ¡®Y¡¯
+)t
+
+
+
+create table lzm_realpay_result
+as select COMPENSATENO, 
+          CLAIMNO,  
+          CASENO,
+          SUMPAID, 
+          UNDERWRITEENDDATE,
+          UNDERWRITEFLAG,
+          FLAG,
+          CASETYPE,
+          CLASSCODE,
+          RISKCODE, 
+          POLICYNO,
+          CERTITYPE, 
+          CERTINO,
+          REALPAYFEE,
+          REALPAYDATE
+ from (
+  select t.compensateno,
+       t.claimno,
+       t.caseno,
+       t.sumpaid,
+       t.UNDERWRITEENDDATE,
+       t.UNDERWRITEFLAG,
+       t.FLAG,
+       a.CASETYPE,
+       a.CLASSCODE,
+       a.RISKCODE,
+       a.POLICYNO,
+       l.certitype,
+       l.certino,
+       l.realpayfee,
+       l.realpaydate
+  from prplcompensate t, prplclaim a, lzm_prpjrefrectmp l
+ where t.claimno = a.claimno
+   and t.compensateno = l.certino
+union all
+select t1.precompensateno,
+       t1.claimno,
+       a.caseno,
+       t1.sumprepaid,
+       t1.UNDERWRITEENDDATE,
+       t1.UNDERWRITEFLAG,
+       t1.FLAG,
+       a.CASETYPE,
+       a.CLASSCODE,
+       a.RISKCODE,
+       a.POLICYNO,
+       l.certitype,
+       l.certino,
+       l.realpayfee,
+       l.realpaydate
+  from prplprepay t1, prplclaim a, lzm_prpjrefrectmp l
+ where t1.claimno = a.claimno
+   and t1.precompensateno = l.certino
+   
+union all
+select t2.compensateno,
+       t2.claimno,
+       a1.caseno,
+       t2.sumpaid,
+       t2.UNDERWRITEENDDATE,
+       t2.UNDERWRITEFLAG,
+       t2.FLAG,
+       a1.CASETYPE,
+       a1.CLASSCODE,
+       a1.RISKCODE,
+       a1.POLICYNO,
+       l.certitype,
+       l.certino,
+       l.realpayfee,
+       l.realpaydate
+  from prplcompensate t2, prplclaim a1, lzm_prpjrefrectmp l,prplpayinfolist k 
+ where t2.claimno = a1.claimno
+  and  t2.compensateno = k.compensateno
+   and k.payid = l.certino
+union all
+select t3.precompensateno,
+       t3.claimno,
+       a1.caseno,
+       t3.sumprepaid,
+       t3.UNDERWRITEENDDATE,
+       t3.UNDERWRITEFLAG,
+       null,
+       a1.CASETYPE,
+       a1.CLASSCODE,
+       a1.RISKCODE,
+       a1.POLICYNO,
+       l.certitype,
+       l.certino,
+       l.realpayfee,
+       l.realpaydate
+  from prplprepay t3, prplclaim a1, lzm_prpjrefrectmp l,prplpayinfolist k1
+ where t3.claimno = a1.claimno
+ and   t3.precompensateno = k1.compensateno
+   and k1.payid = l.certino
+)
+

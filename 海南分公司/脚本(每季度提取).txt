@@ -1,0 +1,1496 @@
+-- 1 未支付案件
+drop table lzm_hainan_not_paid;
+create table lzm_hainan_not_paid
+as
+  select distinct a.claimno
+  from   prpjplanfee a
+  where  a.riskcode like 'D%'
+  and    a.comcode like '4601%'
+  and    a.claimno is not null
+  group by
+         a.claimno
+  having sum(a.realpayreffee) - sum(a.planfee1) < 0;
+
+-- 2 圈定车险案件 
+drop table lzm_hainan_claim; 
+-- 2.1 老理赔
+create table lzm_hainan_claim
+as
+  select t1.claimno
+         ,t1.registno
+         ,t1.claimdate
+         ,t1.canceldate
+         ,t1.endcasedate
+         ,decode(t1.autoclaimflag,'1','1','0') as autoclaimflag --是否自动立案
+         ,t1.casetype
+         ,nvl(sum(t2.sumdutypaid),0) as sumdutypaid
+         ,'old' as sourceflag
+  from   prplclaim t1
+  left join 
+         prplcompensate t2
+  on     t1.claimno = t2.claimno
+  and    t2.underwriteflag in ('1','3')
+  where  t1.classcode = 'D'
+  and    t1.comcode like '4601%'
+  group by
+         t1.claimno
+         ,t1.registno
+         ,t1.claimdate
+         ,t1.canceldate
+         ,t1.endcasedate
+         ,decode(t1.autoclaimflag,'1','1','0')
+         ,t1.casetype;
+-- 2.2 新理赔
+insert into lzm_hainan_claim
+  select t1.claimno
+         ,t1.registno
+         ,t1.claimdate
+         ,t1.canceldate
+         ,t1.endcasedate
+         ,decode(t1.autoclaimflag,'1','1','0') as autoclaimflag --是否自动立案
+         ,t1.casetype
+         ,nvl(t1.sumdutypaid,0) as sumdutypaid
+         ,'new' as sourceflag
+  from   clmbusi.prplclaim t1
+  join
+         clmbusi.prplregist t2
+  on     t2.registno = t1.registno
+  where  t1.classcode = 'D'
+  and    t2.comcode like '4601%';
+commit;
+
+alzmer table lzm_hainan_not_paid add primary key(claimno);
+alzmer table lzm_hainan_claim modify casetype varchar(10);
+
+-- 3 更改案件状态
+update
+  (
+  select a.claimno
+         ,a.casetype
+         ,case when a.casetype = '0' then '注销'
+               when a.casetype = '1' then '拒赔'
+               when a.endcasedate is null then '未结案'
+               when b.claimno is not null then '未结案'
+               when a.sumdutypaid = 0 then '零结案'
+               else '正常结案'
+           end casetype_1
+  from   lzm_hainan_claim a
+  left join
+         lzm_hainan_not_paid b
+  on     a.claimno = b.claimno
+  )
+set casetype = casetype_1;
+commit;
+
+     
+-- 4 资金支付时间
+-- 4.1 取批次号
+drop table lzm_hainan_zj_pre;
+create table lzm_hainan_zj_pre
+as
+  -- 老理赔
+  select a.claimno,nvl(c.paybatchno,c.certino) as paybatchno
+  from   lzm_hainan_claim a
+  join   prplcompensate b
+  on     a.claimno = b.claimno
+  and    b.underwriteflag in ('1','3')
+  join   prpjplanfee c
+  on     c.certino = b.compensateno
+  where  a.casetype = '正常结案'
+  and    a.sourceflag = 'old'
+  union all
+  select /*+parallel(c 8)*/a.claimno,nvl(c.paybatchno,c.certino) as paybatchno
+  from   lzm_hainan_claim a
+  join   prplcompensate b
+  on     a.claimno = b.claimno
+  and    b.underwriteflag in ('1','3')
+  join   prpjplanfeehis c
+  on     c.certino = b.compensateno
+  where  a.casetype = '正常结案'
+  and    a.sourceflag = 'old'
+  -- 老理赔预赔
+  union all
+  select a.claimno,nvl(c.paybatchno,c.certino) as paybatchno
+  from   lzm_hainan_claim a
+  join   prplprepay b
+  on     a.claimno = b.claimno
+  and    b.underwriteflag in ('1','3')
+  join   prpjplanfee c
+  on     c.certino = b.precompensateno
+  where  a.casetype = '正常结案'
+  and    a.sourceflag = 'old'
+  union
+  select /*+parallel(c 8)*/a.claimno,nvl(c.paybatchno,c.certino) as paybatchno
+  from   lzm_hainan_claim a
+  join   prplprepay b
+  on     a.claimno = b.claimno
+  and    b.underwriteflag in ('1','3')
+  join   prpjplanfeehis c
+  on     c.certino = b.precompensateno
+  where  a.casetype = '正常结案'
+  and    a.sourceflag = 'old';
+  -- 新理赔
+insert into lzm_hainan_zj_pre
+  select a.claimno,nvl(d.paybatchno,d.certino) as paybatchno
+  from   lzm_hainan_claim a
+  join   clmbusi.prplcompensate b
+  on     a.claimno = b.claimno
+  and    b.underwriteflag in ('1','3')
+  and    b.validstatus is null
+  join   clmbusi.prplpayinfolist c
+  on     b.compensateno = c.compensateno
+  join   prpjplanfee d
+  on     d.certino = c.payid
+  where  a.casetype = '正常结案'
+  and    a.sourceflag = 'new'
+  union
+  select /*+parallel(d 8)*/a.claimno,nvl(d.paybatchno,d.certino) as paybatchno
+  from   lzm_hainan_claim a
+  join   clmbusi.prplcompensate b
+  on     a.claimno = b.claimno
+  and    b.underwriteflag in ('1','3')
+  and    b.validstatus is null
+  join   clmbusi.prplpayinfolist c
+  on     b.compensateno = c.compensateno
+  join   prpjplanfeehis d
+  on     d.certino = c.payid
+  where  a.casetype = '正常结案'
+  and    a.sourceflag = 'new'
+  -- 新理赔预赔
+  union
+  select a.claimno,nvl(d.paybatchno,d.certino) as paybatchno
+  from   lzm_hainan_claim a
+  join   clmbusi.prplprepay b
+  on     a.claimno = b.claimno
+  and    b.underwriteflag in ('1','3')
+  join   clmbusi.prplpayinfolist c
+  on     b.precompensateno = c.compensateno
+  join   prpjplanfee d
+  on     d.certino = c.payid
+  where  a.casetype = '正常结案'
+  and    a.sourceflag = 'new'
+  union
+  select /*+parallel(d 8)*/a.claimno,nvl(d.paybatchno,d.certino) as paybatchno
+  from   lzm_hainan_claim a
+  join   clmbusi.prplprepay b
+  on     a.claimno = b.claimno
+  and    b.underwriteflag in ('1','3')
+  join   clmbusi.prplpayinfolist c
+  on     b.precompensateno = c.compensateno
+  join   prpjplanfeehis d
+  on     d.certino = c.payid
+  where  a.casetype = '正常结案'
+  and    a.sourceflag = 'new';
+commit;
+    
+-- 4.2 取批次号第一次发送时间的最大值
+drop table lzm_hainan_zj;
+create table lzm_hainan_zj
+as
+  select claimno,max(d_paysentdate) as d_paysentdate
+  from
+         (
+          select /*+parallel(b 8)*/
+                 a.claimno
+                 ,b.c_memo
+                 ,b.d_paysentdate
+                 ,row_number() over(partition by a.claimno,b.c_memo order by b.d_paysentdate) as rn
+          from   lzm_hainan_zj_pre a
+          join   reportnet.tse_payments b
+          on     a.paybatchno = b.c_memo
+          where  b.c_paystate in ('2','3','4')
+         )
+  where  rn = 1
+  group by claimno;
+    
+-- 5 收付费系统支付时间
+drop table lzm_hainan_realpaydate;
+create table lzm_hainan_realpaydate
+as
+  select claimno,max(Realpaydate) as Realpaydate
+  from
+         (
+          --老理赔
+          select a.claimno
+                 ,to_date(to_char(c.Realpaydate, 'yyyy-mm-dd') || ' ' || c.Transtime, 'yyyy-mm-dd hh24:mi:ss') AS Realpaydate
+          from   lzm_hainan_claim a
+          join   prplcompensate b
+          on     a.claimno = b.claimno
+          and    b.underwriteflag in ('1','3')
+          join   prpjrefrec c
+          on     c.certino = b.compensateno
+          where  a.casetype = '正常结案'
+          and    a.sourceflag = 'old'
+          and    c.realpaydate is not null
+          union
+          select a.claimno
+                 ,to_date(to_char(c.Realpaydate, 'yyyy-mm-dd') || ' ' || c.Transtime, 'yyyy-mm-dd hh24:mi:ss') AS Realpaydate
+          from   lzm_hainan_claim a
+          join   prplcompensate b
+          on     a.claimno = b.claimno
+          and    b.underwriteflag in ('1','3')
+          join   prpjrefrechis c
+          on     c.certino = b.compensateno
+          where  a.casetype = '正常结案'
+          and    a.sourceflag = 'old'
+          and    c.realpaydate is not null
+          --老理赔预赔
+          union
+          select a.claimno
+                 ,to_date(to_char(c.Realpaydate, 'yyyy-mm-dd') || ' ' || c.Transtime, 'yyyy-mm-dd hh24:mi:ss') AS Realpaydate
+          from   lzm_hainan_claim a
+          join   prplprepay b
+          on     a.claimno = b.claimno
+          and    b.underwriteflag in ('1','3')
+          join   prpjrefrec c
+          on     c.certino = b.precompensateno
+          where  a.casetype = '正常结案'
+          and    a.sourceflag = 'old'
+          and    c.realpaydate is not null
+          union
+          select a.claimno
+                 ,to_date(to_char(c.Realpaydate, 'yyyy-mm-dd') || ' ' || c.Transtime, 'yyyy-mm-dd hh24:mi:ss') AS Realpaydate
+          from   lzm_hainan_claim a
+          join   prplprepay b
+          on     a.claimno = b.claimno
+          and    b.underwriteflag in ('1','3')
+          join   prpjrefrechis c
+          on     c.certino = b.precompensateno
+          where  a.casetype = '正常结案'
+          and    a.sourceflag = 'old'
+          and    c.realpaydate is not null
+          --新理赔
+          union
+          select a.claimno
+                 ,to_date(to_char(d.Realpaydate, 'yyyy-mm-dd') || ' ' || d.Transtime, 'yyyy-mm-dd hh24:mi:ss') AS Realpaydate
+          from   lzm_hainan_claim a
+          join   clmbusi.prplcompensate b
+          on     a.claimno = b.claimno
+          and    b.underwriteflag in ('1','3')
+          and    b.validstatus is null
+          join   clmbusi.prplpayinfolist c
+          on     b.compensateno = c.compensateno
+          join   prpjrefrec d
+          on     d.certino = c.payid
+          where  a.casetype = '正常结案'
+          and    a.sourceflag = 'new'
+          and    d.realpaydate is not null
+          union
+          select a.claimno
+                 ,to_date(to_char(d.Realpaydate, 'yyyy-mm-dd') || ' ' || d.Transtime, 'yyyy-mm-dd hh24:mi:ss') AS Realpaydate
+          from   lzm_hainan_claim a
+          join   clmbusi.prplcompensate b
+          on     a.claimno = b.claimno
+          and    b.underwriteflag in ('1','3')
+          and    b.validstatus is null
+          join   clmbusi.prplpayinfolist c
+          on     b.compensateno = c.compensateno
+          join   prpjrefrechis d
+          on     d.certino = c.payid
+          where  a.casetype = '正常结案'
+          and    a.sourceflag = 'new'
+          and    d.realpaydate is not null
+          --新理赔预赔
+          union
+          select a.claimno
+                 ,to_date(to_char(d.Realpaydate, 'yyyy-mm-dd') || ' ' || d.Transtime, 'yyyy-mm-dd hh24:mi:ss') AS Realpaydate
+          from   lzm_hainan_claim a
+          join   clmbusi.prplprepay b
+          on     a.claimno = b.claimno
+          and    b.underwriteflag in ('1','3')
+          join   clmbusi.prplpayinfolist c
+          on     b.precompensateno = c.compensateno
+          join   prpjrefrec d
+          on     d.certino = c.payid
+          where  a.casetype = '正常结案'
+          and    a.sourceflag = 'new'
+          and    d.realpaydate is not null
+          union
+          select a.claimno
+                 ,to_date(to_char(d.Realpaydate, 'yyyy-mm-dd') || ' ' || d.Transtime, 'yyyy-mm-dd hh24:mi:ss') AS Realpaydate
+          from   lzm_hainan_claim a
+          join   clmbusi.prplprepay b
+          on     a.claimno = b.claimno
+          and    b.underwriteflag in ('1','3')
+          join   clmbusi.prplpayinfolist c
+          on     b.precompensateno = c.compensateno
+          join   prpjrefrechis d
+          on     d.certino = c.payid
+          where  a.casetype = '正常结案'
+          and    a.sourceflag = 'new'
+          and    d.realpaydate is not null
+         )
+  group by claimno;
+-- 6 估损金额
+drop table lzm_hainan_sumloss;
+create table lzm_hainan_sumloss
+as
+  select a.claimno
+         ,sum(b.sumclaim) as sumclaim
+  from   lzm_hainan_claim a
+  join   prplclaimloss b
+  on     a.claimno = b.claimno
+  where  a.sourceflag = 'old'
+  group by a.claimno
+  union
+  select a.claimno
+         ,sum(b.sumclaim) as sumclaim
+  from   lzm_hainan_claim a
+  join   clmbusi.prplclaimloss b
+  on     a.claimno = b.claimno
+  where  a.sourceflag = 'new'
+  group by a.claimno;
+
+-- 7 核赔完成时间
+drop table lzm_hainan_hepei;
+create table lzm_hainan_hepei
+as
+  select claimno,max(underwriteenddate) as underwriteenddate
+  from
+         (
+          select a.claimno,to_date(c.submittime,'yyyy-mm-dd hh24:mi:ss') as underwriteenddate
+          from   lzm_hainan_claim a
+          join   prplcompensate b
+          on     a.claimno = b.claimno
+          and    b.underwriteflag in ('1','3')
+          join   Swflogstore c
+          on     b.compensateno = c.businessno
+          and    c.nodestatus = '4'
+          where  a.sourceflag = 'old'
+          and    a.casetype = '正常结案'
+          union
+          select a.claimno,to_date(c.submittime,'yyyy-mm-dd hh24:mi:ss') as underwriteenddate
+          from   lzm_hainan_claim a
+          join   prplcompensate b
+          on     a.claimno = b.claimno
+          and    b.underwriteflag in ('1','3')
+          join   Swflog c
+          on     b.compensateno = c.businessno
+          and    c.nodestatus = '4'
+          where  a.sourceflag = 'old'
+          and    a.casetype = '正常结案'
+          union
+          select a.claimno,b.underwriteenddate
+          from   lzm_hainan_claim a
+          join   clmbusi.prplcompensate b
+          on     a.claimno = b.claimno
+          and    b.underwriteflag in ('1','3')
+          and    b.validstatus is null
+          and    (b.compensatemode <> '7' or b.compensatemode is null)
+          where  a.sourceflag = 'new'
+          and    a.casetype = '正常结案'
+         )
+  group by claimno;
+  
+-- 8 正常结案的单证收集时间
+  -- 8.1 老理赔
+drop table lzm_hainan_certifycollect;
+create table lzm_hainan_certifycollect
+as
+  select t1.claimno
+         ,to_date(max(t2.allcollecttime), 'yyyy-mm-dd hh24:mi:ss') as allcollecttime
+  from   lzm_hainan_claim t1
+  join   prplcertifycollect t2
+  on     t1.registno = t2.businessno
+  where  t2.allcollecttime is not null
+  and    t1.casetype = '正常结案'
+  and    t1.sourceflag = 'old'
+  group by t1.claimno;
+  -- 8.2 新理赔
+insert into lzm_hainan_certifycollect
+  select t.claimno,max(endtime) as allcollecttime
+  from
+          (
+          select t1.claimno
+                 ,t2.endtime
+          from   lzm_hainan_claim t1
+          join   clmbusi.t_edf_task t2
+          on     t1.registno = t2.registno
+          and    t2.tasktype  ='DocCollect'
+          where  t1.casetype = '正常结案'
+          and    t1.sourceflag = 'new'
+          union all
+          select t1.claimno
+                 ,t2.endtime
+          from   lzm_hainan_claim t1
+          join   clmbusi.t_edf_taskhis t2
+          on     t1.registno = t2.registno
+          and    t2.tasktype  ='DocCollect'
+          where  t1.casetype = '正常结案'
+          and    t1.sourceflag = 'new'
+          )t
+  group by t.claimno;
+commit;
+ 
+-- 9 合并
+drop table lzm_hainan_claim_main;
+create table lzm_hainan_claim_main
+as
+  select a.claimno
+         ,a.registno
+         ,a.casetype                                         --案件状态
+         ,e.sumclaim                                         --估损金额
+         ,a.sumdutypaid                                      --赔款金额
+         ,a.autoclaimflag                                    --是否自动立案
+         ,a.claimdate                                        --立案时间
+         ,a.canceldate                                       --注销时间
+         ,a.endcasedate                                      --结案时间
+         ,nvl(b.d_paysentdate,c.realpaydate) as realpaydate  --支付时间
+         ,d.underwriteenddate                                --核赔通过时间
+         ,f.allcollecttime                                   --单证收集时间
+         ,a.sourceflag
+  from lzm_hainan_claim a
+  left join
+       lzm_hainan_zj b
+  on   a.claimno = b.claimno
+  left join
+       lzm_hainan_realpaydate c
+  on   a.claimno = c.claimno
+  left join
+       lzm_hainan_hepei d
+  on   a.claimno = d.claimno
+  left join
+       lzm_hainan_sumloss e
+  on   a.claimno = e.claimno
+  left join
+       lzm_hainan_certifycollect f
+  on   a.claimno = f.claimno;
+
+-- 10 盗抢险
+drop table lzm_hainan_gg1;
+create table lzm_hainan_gg1
+as
+  --估损
+  select a.claimno
+  from   prplclaimloss a
+  where  a.kindcode in ('G','G1')
+  and exists (select 'x' from lzm_hainan_claim_main b where a.claimno = b.claimno)
+  --人员赔付信息表
+  union
+  select a.claimno
+  from   prplcompensate a
+  join   prplpersonloss b
+  on     a.compensateno = b.compensateno
+  where  b.kindcode in ('G','G1')
+  and    a.underwriteflag in ('1','3')
+  and exists (select 'x' from lzm_hainan_claim_main c where a.claimno = c.claimno)
+  --赔付标的信息表
+  union
+  select a.claimno
+  from   prplcompensate a
+  join   prplloss b
+  on     a.compensateno = b.compensateno
+  where  b.kindcode in ('G','G1')
+  and    a.underwriteflag in ('1','3')
+  and exists (select 'x' from lzm_hainan_claim_main c where a.claimno = c.claimno)
+  --赔款费用信息表
+  union
+  select a.claimno
+  from   prplcompensate a
+  join   prplcharge b
+  on     a.compensateno = b.compensateno
+  where  b.kindcode in ('G','G1')
+  and    a.underwriteflag in ('1','3')
+  and exists (select 'x' from lzm_hainan_claim_main c where a.claimno = c.claimno);
+
+-- 11 报案信息
+-- 11.1 老理赔报案信息
+drop table lzm_hainan_regist;
+create table lzm_hainan_regist
+as
+  select t1.registno
+         ,t1.canceldate
+         ,to_date(to_char(t1.reportdate, 'yyyy-mm-dd') || ' ' || t1.reporthour, 'yyyy-mm-dd hh24:mi:ss') as reportdate
+         ,'old' as sourceflag
+  from   prplregist t1
+  where  t1.classcode = 'D'
+  and    t1.comcode like '4601%';
+-- 11.2 新理赔报案信息
+insert into lzm_hainan_regist
+  select t1.registno
+         ,trunc(t1.canceldate) as canceldate
+         ,to_date(to_char(t1.reportdate, 'yyyy-mm-dd') || ' ' || t1.reporthour, 'yyyy-mm-dd hh24:mi:ss') as reportdate
+         ,'new' as sourceflag
+  from   clmbusi.prplregist t1
+  where  t1.classcode = 'D'
+  and    t1.comcode like '4601%';
+commit;
+    
+---------------------------------------------------------------------------------------------------------
+drop table lzm_hainan_kpi;
+create table lzm_hainan_kpi
+(
+  id_no_1   INTEGER,
+  id_no_2   INTEGER,
+  c_name    VARCHAR2(255),
+  c_value   NUMBER
+);
+--(1) 案均报案支付周期
+--(1.2)
+insert into lzm_hainan_kpi
+  select 1
+         ,2
+         ,'案均报案支付周期'
+         ,round(sum(t1.realpaydate - t2.reportdate) * 24,0)
+  from   lzm_hainan_claim_main t1
+  join   lzm_hainan_regist t2
+  on     t2.registno = t1.registno
+  where  t1.casetype = '正常结案'
+  and    trunc(t1.realpaydate) between trunc(&p_date,'yyyy') and &p_date
+  and not exists (select 'x' from lzm_hainan_gg1 t3 where t3.claimno = t1.claimno)--剔除盗抢险
+  ;
+commit;
+--(1.3)
+insert into lzm_hainan_kpi
+  select 1
+         ,3
+         ,'案均报案支付周期'
+         ,count(*)
+  from   lzm_hainan_claim_main t1
+  join   lzm_hainan_regist t2
+  on     t2.registno = t1.registno
+  where  t1.casetype = '正常结案'
+  and    trunc(t1.realpaydate) between trunc(&p_date,'yyyy') and &p_date
+  and not exists (select 'x' from lzm_hainan_gg1 t3 where t3.claimno = t1.claimno)--剔除盗抢险
+  ;
+commit;
+--(1.1)
+insert into lzm_hainan_kpi
+  select 1
+         ,1
+         ,'案均报案支付周期'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                  / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,2)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '1';
+commit;
+
+--(2) 案均报案理算周期
+--(2.2)
+insert into lzm_hainan_kpi
+  select 2
+         ,2
+         ,'案均报案理算周期'
+         ,round(sum(t1.allcollecttime - t2.reportdate) * 24,0)
+  from   lzm_hainan_claim_main t1
+  join   lzm_hainan_regist t2
+  on     t2.registno = t1.registno
+  where  t1.casetype = '正常结案'
+  and    trunc(t1.realpaydate) between trunc(&p_date,'yyyy') and &p_date
+  and not exists (select 'x' from lzm_hainan_gg1 t3 where t3.claimno = t1.claimno)--剔除盗抢险
+  ;
+commit;
+--(2.3)
+insert into lzm_hainan_kpi
+  select 2
+         ,3
+         ,'案均报案理算周期'
+         ,count(*)
+  from   lzm_hainan_claim_main t1
+  join   lzm_hainan_regist t2
+  on     t2.registno = t1.registno
+  where  t1.casetype = '正常结案'
+  and    trunc(t1.realpaydate) between trunc(&p_date,'yyyy') and &p_date
+  and not exists (select 'x' from lzm_hainan_gg1 t3 where t3.claimno = t1.claimno)--剔除盗抢险
+  ;
+commit;
+--(2.1)
+insert into lzm_hainan_kpi
+  select 2
+         ,1
+         ,'案均报案理算周期'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,2)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '2';
+commit;
+
+--(3) 案均理算核赔周期
+--(3.2)
+insert into lzm_hainan_kpi
+  select 3
+         ,2
+         ,'案均理算核赔周期'
+         ,round(sum(t1.underwriteenddate - t1.allcollecttime) * 24,0)
+  from   lzm_hainan_claim_main t1
+  where  t1.casetype = '正常结案'
+  and    trunc(t1.realpaydate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(3.3)
+insert into lzm_hainan_kpi
+  select 3
+         ,3
+         ,'案均理算核赔周期'
+         ,count(*)
+  from   lzm_hainan_claim_main t1
+  where  t1.casetype = '正常结案'
+  and    trunc(t1.realpaydate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(3.1)
+insert into lzm_hainan_kpi
+  select 3
+         ,1
+         ,'案均理算核赔周期'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,2)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '3';
+commit;
+
+--(4) 案均核赔支付周期
+--(4.2)
+insert into lzm_hainan_kpi
+  select 4
+         ,2
+         ,'案均核赔支付周期'
+         ,round(sum(t1.realpaydate - t1.underwriteenddate) * 24,0)
+  from   lzm_hainan_claim_main t1
+  where  t1.casetype = '正常结案'
+  and    trunc(t1.realpaydate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(4.3)
+insert into lzm_hainan_kpi
+  select 4
+         ,3
+         ,'案均核赔支付周期'
+         ,count(*)
+  from   lzm_hainan_claim_main t1
+  where  t1.casetype = '正常结案'
+  and    trunc(t1.realpaydate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(4.1)
+insert into lzm_hainan_kpi
+  select 4
+         ,1
+         ,'案均核赔支付周期'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,2)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '4';
+commit;
+--(5) 立案结案率（当期）
+--(5.2)
+insert into lzm_hainan_kpi
+  select 5
+         ,2
+         ,'立案结案率（当期）'
+         ,sum(case when t.casetype in ('注销','拒赔','零结案')
+                   and  trunc(t.endcasedate) between trunc(&p_date,'yyyy') and &p_date
+                   then 1
+                   when t.casetype = '正常结案'
+                   and  trunc(t.realpaydate) between trunc(&p_date,'yyyy') and &p_date
+                   then 1
+                   else 0 
+              end)
+  from   lzm_hainan_claim_main t
+  where  trunc(t.claimdate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(5.3)
+insert into lzm_hainan_kpi
+  select 5
+         ,3
+         ,'立案结案率（当期）'
+         ,count(*)
+  from   lzm_hainan_claim_main t
+  where  trunc(t.claimdate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(5.1)
+insert into lzm_hainan_kpi
+  select 5
+         ,1
+         ,'立案结案率（当期）'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '5';
+commit;
+--(6) 立案结案率（存量）
+--(6.2)
+insert into lzm_hainan_kpi
+  select 6
+         ,2
+         ,'立案结案率（存量）'
+         ,sum(case when t.casetype in ('注销','拒赔','零结案')
+                   and  trunc(t.endcasedate) between trunc(&p_date,'yyyy') and &p_date
+                   then 1
+                   when t.casetype = '正常结案'
+                   and  trunc(t.realpaydate) between trunc(&p_date,'yyyy') and &p_date
+                   then 1
+                   else 0
+              end) 
+  from   lzm_hainan_claim_main t
+  where trunc(t.claimdate) < trunc(&p_date,'yyyy')
+  and   (
+         (t.casetype = '正常结案' and trunc(t.realpaydate) >= trunc(&p_date,'yyyy'))
+         or (t.casetype in ('注销','拒赔','零结案') and trunc(t.endcasedate) >= trunc(&p_date,'yyyy'))
+         or t.casetype = '未结案'
+        );
+commit;
+--(6.3)
+insert into lzm_hainan_kpi
+  select 6
+         ,3
+         ,'立案结案率（存量）'
+         ,count(*)
+  from   lzm_hainan_claim_main t
+  where trunc(t.claimdate) < trunc(&p_date,'yyyy')
+  and   (
+         (t.casetype = '正常结案' and trunc(t.realpaydate) >= trunc(&p_date,'yyyy'))
+         or (t.casetype in ('注销','拒赔','零结案') and trunc(t.endcasedate) >= trunc(&p_date,'yyyy'))
+         or t.casetype = '未结案'
+        );
+commit;
+/*--(6.3)
+insert into lzm_hainan_kpi
+  select 6
+         ,3
+         ,'立案结案率（存量）'
+         ,1642
+  from   dual;
+commit;*/
+--(6.1)
+insert into lzm_hainan_kpi
+  select 6
+         ,1
+         ,'立案结案率（存量）'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '6';
+commit;
+--(7) 金额结案率（当期）
+--(7.2)
+insert into lzm_hainan_kpi
+select 7
+       ,2
+       ,'金额结案率（当期）'
+       ,round(sum(case when t.casetype = '正常结案'
+                       and  trunc(t.realpaydate) between trunc(&p_date,'yyyy') and &p_date
+                       then t.sumdutypaid
+                       else 0
+                  end)/10000
+              ,2)
+from   lzm_hainan_claim_main t
+where  trunc(t.claimdate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(7.3)
+insert into lzm_hainan_kpi
+select 7
+       ,3
+       ,'金额结案率（当期）'
+       ,round(
+              (sum(case when t.casetype = '正常结案'
+                       and  trunc(t.realpaydate) between trunc(&p_date,'yyyy') and &p_date
+                       then t.sumdutypaid
+                       else 0
+                  end)
+              +sum(case when t.casetype = '正常结案'
+                        and  trunc(t.realpaydate) > &p_date --期末之后结案的正常案件
+                        then t.sumclaim
+                        when t.casetype in ('注销','拒赔','零结案')
+                        and  trunc(t.endcasedate) > &p_date --期末之后结案的特殊案件
+                        then t.sumclaim
+                        when t.casetype = '未结案' 
+                        then t.sumclaim
+                        else 0
+                   end)
+              )/10000
+              ,2)
+from   lzm_hainan_claim_main t
+where  trunc(t.claimdate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(7.1)
+insert into lzm_hainan_kpi
+select 7
+       ,1
+       ,'金额结案率（当期）'
+       ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '7';
+commit;
+--(8) 金额结案率（存量）
+--(8.2)
+insert into lzm_hainan_kpi
+  select 8
+         ,2
+         ,'金额结案率（存量）'
+         ,round(sum(case when t.casetype = '正常结案'
+                         and  trunc(t.realpaydate) between trunc(&p_date,'yyyy') and &p_date
+                         then t.sumdutypaid
+                         else 0
+                    end)/10000
+                ,2)
+  from   lzm_hainan_claim_main t
+  where trunc(t.claimdate) < trunc(&p_date,'yyyy')
+  and   (
+         (t.casetype = '正常结案' and trunc(t.realpaydate) >= trunc(&p_date,'yyyy'))
+         or (t.casetype in ('注销','拒赔','零结案') and trunc(t.endcasedate) >= trunc(&p_date,'yyyy'))
+         or t.casetype = '未结案'
+        );
+commit;
+--(8.3)
+insert into lzm_hainan_kpi
+  select 8
+         ,3
+         ,'金额结案率（存量）'
+         ,round(sum(t.sumclaim)/10000,2)
+  from   lzm_hainan_claim_main t
+  where trunc(t.claimdate) < trunc(&p_date,'yyyy')
+  and   (
+         (t.casetype = '正常结案' and trunc(t.realpaydate) >= trunc(&p_date,'yyyy'))
+         or (t.casetype in ('注销','拒赔','零结案') and trunc(t.endcasedate) >= trunc(&p_date,'yyyy'))
+         or t.casetype = '未结案'
+        );
+commit;
+--(8.1)
+insert into lzm_hainan_kpi
+  select 8
+         ,1
+         ,'金额结案率（存量）'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '8';
+commit;
+--(9) 报案立案率（商业险）
+--(9.2)
+insert into lzm_hainan_kpi
+  select 9
+         ,2
+         ,'报案立案率（商业险）'
+         ,count(*)
+  from   lzm_hainan_claim_main a
+  join   clmbusi.prplclaim b
+  on     a.claimno = b.claimno
+  and    b.damageflag = 'BI'
+  where  trunc(a.claimdate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(9.3)
+insert into lzm_hainan_kpi
+  select 9
+         ,3
+         ,'报案立案率（商业险）'
+         ,count(distinct a.registno)
+  from   lzm_hainan_regist a
+  join   clmbusi.prplimplicateitemkind b
+  on     a.registno = b.registno
+  and    b.kindcode <> 'BZ'
+  where  trunc(a.reportdate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(9.1)
+insert into lzm_hainan_kpi
+  select 9
+         ,1
+         ,'报案立案率（商业险）'
+         ,round(max(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / max(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from lzm_hainan_kpi t
+  where t.id_no_1 = '9';
+commit;
+--(10) 报案立案率（交强险）
+--(10.2)
+insert into lzm_hainan_kpi
+  select 10
+         ,2
+         ,'报案立案率（交强险）'
+         ,count(*)
+  from   lzm_hainan_claim_main a
+  join   clmbusi.prplclaim b
+  on     a.claimno = b.claimno
+  and    b.damageflag = 'CI'
+  where  trunc(a.claimdate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(10.3)
+insert into lzm_hainan_kpi
+  select 10
+         ,3
+         ,'报案立案率（交强险）'
+         ,count(distinct a.registno)
+  from   lzm_hainan_regist a
+  join   clmbusi.prplimplicateitemkind b
+  on     a.registno = b.registno
+  and    b.kindcode = 'BZ'
+  where  trunc(a.reportdate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(10.1)
+insert into lzm_hainan_kpi
+  select 10
+         ,1
+         ,'报案立案率（交强险）'
+         ,round(max(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / max(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from lzm_hainan_kpi t
+  where t.id_no_1 = '10';
+commit;
+    
+--(11) 系统强制立案率
+--(11.2)
+insert into lzm_hainan_kpi
+  select 11
+         ,2
+         ,'系统强制立案率'
+         ,sum(decode(t.autoclaimflag,'1',1,0))
+  from   lzm_hainan_claim_main t
+  where  trunc(t.claimdate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(11.3)
+insert into lzm_hainan_kpi
+  select 11
+         ,3
+         ,'系统强制立案率'
+         ,count(*)
+  from   lzm_hainan_claim_main t
+  where  trunc(t.claimdate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(11.1)
+insert into lzm_hainan_kpi
+  select 11
+         ,1
+         ,'系统强制立案率'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '11';
+commit;
+----------------------------------------------------------------------------------------------
+-- 12 重开案件
+-- 12.1 老理赔重开案
+drop table lzm_hainan_recase;
+create table lzm_hainan_recase
+as
+  select t1.claimno
+         ,t1.closecasedate --重开后结案时间
+         ,t1.recancelflag
+         ,'old' as sourceflag
+  from   prplrecase t1
+  join   prplclaim t2
+  on     t2.claimno = t1.claimno
+  where  trunc(t1.opencasedate) between trunc(&p_date,'yyyy') and &p_date
+  and    t2.classcode = 'D'
+  and    t2.comcode like '4601%';
+
+insert into lzm_hainan_recase
+  select /*+parallel(t1 8)*/
+         t1.claimno
+         ,t1.closeendcasedate --重开后结案时间
+         ,t1.recancelflag
+         ,'old' as sourceflag
+  from   prplvirtualclaim t1
+  join   prplclaim t2
+  on     t2.claimno = t1.claimno
+  where  trunc(t1.claimcanceldate) between trunc(&p_date,'yyyy') and &p_date
+  and    t2.classcode = 'D'
+  and    t2.comcode like '4601%'
+  and    t1.validstatus in ('8','7');
+commit;
+-- 12.2 新理赔重开案
+insert into lzm_hainan_recase
+  select t1.claimno
+         ,t1.endcasedate --重开后结案时间
+         ,t1.recancelflag||t1.opencasetimes
+         ,'new' as sourceflag
+  from   clmbusi.prplrecase t1
+  join   prpcmain t2
+  on     t2.policyno = t1.policyno
+  where  trunc(t1.opencasedate) between trunc(&p_date,'yyyy') and &p_date
+  and    t2.classcode = 'D'
+  and    t2.comcode like '4601%'
+  and    t1.opencasetype in ('02','03')
+  and    t1.flag = '1';
+commit;
+
+-- 13 重开案件已决赔款
+-- 13.1 老理赔
+drop table lzm_hainan_recase_sumpaid;
+create table lzm_hainan_recase_sumpaid
+as
+  select t1.claimno
+         ,sum(t2.sumpaid) as recase_sumpaid
+  from   lzm_hainan_recase t1
+  join   prplcompensate t2
+  on     t2.claimno = t1.claimno
+  and    t2.recancelflag = t1.recancelflag
+  and    t2.underwriteflag in ('1','3')
+  where  trunc(t1.closecasedate) between trunc(&p_date,'yyyy') and &p_date
+  and    t1.sourceflag = 'old'
+  group by
+         t1.claimno;
+
+-- 13.2 新理赔
+insert into lzm_hainan_recase_sumpaid
+  select t1.claimno
+         ,sum(t2.sumpaid) as recase_sumpaid
+  from   lzm_hainan_recase t1
+  join   clmbusi.prplcompensate t2
+  on     t2.claimno = t1.claimno
+  and    t2.recancelflag||t2.recaseno = t1.recancelflag
+  and    t2.underwriteflag in ('1','3')
+  and    t2.validstatus is null
+  where  trunc(t1.closecasedate) between trunc(&p_date,'yyyy') and &p_date
+  and    t1.sourceflag = 'new'
+  group by
+         t1.claimno;
+commit;
+----------------------------------------------------------------------------------------------------------------
+--(12) 赔案重开率（笔数）
+--(12.2)
+insert into lzm_hainan_kpi
+  select 12
+         ,2
+         ,'赔案重开率（笔数）'
+         ,count(*)
+  from   lzm_hainan_recase t;
+commit;
+--(12.3)
+insert into lzm_hainan_kpi
+  select 12
+         ,3
+         ,'赔案重开率（笔数）'
+         ,t.c_value
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '11'
+  and    t.id_no_2 = '3';
+commit;
+--(12.1)
+insert into lzm_hainan_kpi
+  select 12
+         ,1
+         ,'赔案重开率（笔数）'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '12';
+commit;
+
+--(13) 赔案重开率（金额）
+--(13.2)
+insert into lzm_hainan_kpi
+  select 13
+         ,2
+         ,'赔案重开率（金额）'
+         ,round(sum(t.recase_sumpaid)/10000,2)
+  from   lzm_hainan_recase_sumpaid t;
+commit;
+--(13.3)
+insert into lzm_hainan_kpi
+  select 13
+         ,3
+         ,'赔案重开率（金额）'
+         ,t.c_value
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '7'
+  and    t.id_no_2 = '3';
+commit;
+--(13.1)
+insert into lzm_hainan_kpi
+  select 13
+         ,1
+         ,'赔案重开率（金额）'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '13';
+commit;
+
+--------------------------------------------------------------------------
+-- 14 计算初次未决估损金额
+-- 14.1 老理赔
+drop table lzm_hainan_piancha;
+create table lzm_hainan_piancha
+as
+  select t1.claimno
+         ,t1.sumdutypaid
+         ,sum(nvl(t2.sumclaim,0)) as 初次未决估损金额
+  from   lzm_hainan_claim_main t1
+  left join
+         prplclaimloss t2
+  on     t2.claimno = t1.claimno
+  and    t1.claimdate = t2.inputdate
+  and    t2.flag <> '9916'
+  where  t1.sourceflag = 'old'
+  and    t1.casetype = '正常结案'
+  and    trunc(t1.realpaydate) between trunc(&p_date,'yyyy') and &p_date
+  group by
+         t1.claimno
+         ,t1.sumdutypaid;
+-- 14.2 新理赔
+insert into lzm_hainan_piancha
+  select t1.claimno
+         ,t1.sumdutypaid
+         ,sum(nvl(t2.sumclaim,0)) as 初次未决估损金额
+  from   lzm_hainan_claim_main t1
+  left join
+         clmbusi.prplclaimloss t2
+  on     t2.claimno = t1.claimno
+  and    trunc(t1.claimdate) = t2.inputtime
+  where  t1.sourceflag = 'new'
+  and    t1.casetype = '正常结案'
+  and    trunc(t1.realpaydate) between trunc(&p_date,'yyyy') and &p_date
+  group by
+         t1.claimno
+         ,t1.sumdutypaid;
+commit;
+
+--(14) 初次估损代数偏差率
+--(14.2)
+insert into lzm_hainan_kpi
+  select 14
+         ,2
+         ,'初次估损代数偏差率'
+         ,round(sum(t.初次未决估损金额 - t.sumdutypaid)/10000,2)
+  from   lzm_hainan_piancha t;
+commit;
+--(14.3)
+insert into lzm_hainan_kpi
+  select 14
+         ,3
+         ,'初次估损代数偏差率'
+         ,round(sum(t.sumdutypaid)/10000,2)
+  from   lzm_hainan_piancha t;
+commit;
+--(14.1)
+insert into lzm_hainan_kpi
+  select 14
+         ,1
+         ,'初次估损代数偏差率'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '14';
+commit;
+
+--(15) 初次估损绝对偏差率
+--(15.2)
+insert into lzm_hainan_kpi
+  select 15
+         ,2
+         ,'初次估损绝对偏差率'
+         ,round(sum(abs(t.初次未决估损金额 - t.sumdutypaid))/10000,2)
+  from   lzm_hainan_piancha t;
+commit;
+--(15.3)
+insert into lzm_hainan_kpi
+  select 15
+         ,3
+         ,'初次估损绝对偏差率'
+         ,round(sum(t.sumdutypaid)/10000,2)
+  from   lzm_hainan_piancha t;
+commit;
+--(15.1)
+insert into lzm_hainan_kpi
+  select 15
+         ,1
+         ,'初次估损绝对偏差率'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '15';
+commit;
+
+--(16) 零赔付结案率
+--(16.2)
+insert into lzm_hainan_kpi
+  select 16
+         ,2
+         ,'零赔付结案率'
+         ,sum(decode(t.casetype,'零结案',1,0))
+  from   lzm_hainan_claim_main t
+  where  (t.casetype = '正常结案' and trunc(t.realpaydate) between trunc(&p_date,'yyyy') and &p_date)
+  or     (t.casetype in ('注销','拒赔','零结案') and trunc(t.endcasedate) between trunc(&p_date,'yyyy') and &p_date);
+commit;
+--(16.3)
+insert into lzm_hainan_kpi
+  select 16
+         ,3
+         ,'零赔付结案率'
+         ,count(*)
+  from   lzm_hainan_claim_main t
+  where  (t.casetype = '正常结案' and trunc(t.realpaydate) between trunc(&p_date,'yyyy') and &p_date)
+  or     (t.casetype in ('注销','拒赔','零结案') and trunc(t.endcasedate) between trunc(&p_date,'yyyy') and &p_date);
+commit;
+--(16.1)
+insert into lzm_hainan_kpi
+  select 16
+         ,1
+         ,'零赔付结案率'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '16';
+commit;
+
+--(17) 报案注销率
+--(17.2)
+insert into lzm_hainan_kpi
+  select 17
+         ,2
+         ,'报案注销率'
+         ,sum(case when t.canceldate between trunc(&p_date,'yyyy') and &p_date then 1 else 0 end)
+  from   lzm_hainan_regist t;
+commit;
+--(17.3)
+insert into lzm_hainan_kpi
+  select 17
+         ,3
+         ,'报案注销率'
+         ,sum(case when trunc(t.reportdate) between trunc(&p_date,'yyyy') and &p_date then 1 else 0 end)
+  from   lzm_hainan_regist t;
+commit;
+--(17.1)
+insert into lzm_hainan_kpi
+  select 17
+         ,1
+         ,'报案注销率'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '17';
+commit;
+
+--(18) 立案注销率（笔数）
+--(18.2)
+insert into lzm_hainan_kpi
+  select 18
+         ,2
+         ,'立案注销率（笔数）'
+         ,sum(case when trunc(t.canceldate) between trunc(&p_date,'yyyy') and &p_date then 1 else 0 end)
+  from   lzm_hainan_claim_main t;
+commit;
+--(18.3)
+insert into lzm_hainan_kpi
+  select 18
+         ,3
+         ,'立案注销率（笔数）'
+          ,t.c_value
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '11'
+  and    t.id_no_2 = '3';
+commit;
+--(18.1)
+insert into lzm_hainan_kpi
+  select 18
+         ,1
+         ,'立案注销率（笔数）'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                  / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '18';
+commit;
+
+--(19) 立案注销率（金额）
+--(19.2)
+insert into lzm_hainan_kpi
+  select 19
+         ,2
+         ,'立案注销率（金额）'
+         ,round(nvl(sum(t.sumclaim),0)/10000,2)
+  from   lzm_hainan_claim_main t
+  where  trunc(t.canceldate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(19.3)
+insert into lzm_hainan_kpi
+  select 19
+         ,3
+         ,'立案注销率（金额）'
+         ,t.c_value
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '7'
+  and    t.id_no_2 = '3';
+commit;
+--(19.1)
+insert into lzm_hainan_kpi
+  select 19
+         ,1
+         ,'立案注销率（金额）'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                  / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,4)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '19';
+commit;
+--(20) 案均已决金额
+--(20.2)
+insert into lzm_hainan_kpi
+  select 20
+         ,2
+         ,'案均已决金额'
+         ,round(sum(t.sumdutypaid)/10000,2)
+  from   lzm_hainan_claim_main t
+  where  t.casetype = '正常结案'
+  and    trunc(t.realpaydate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(20.3)
+insert into lzm_hainan_kpi
+  select 20
+         ,3
+         ,'案均已决金额'
+         ,count(*)
+  from   lzm_hainan_claim_main t
+  where  t.casetype = '正常结案'
+  and    trunc(t.realpaydate) between trunc(&p_date,'yyyy') and &p_date;
+commit;
+--(20.1)
+insert into lzm_hainan_kpi
+  select 20
+         ,1
+         ,'案均已决金额'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                  / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,2)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '20';
+commit;
+--(21) 案均未决金额
+--(21.2)
+insert into lzm_hainan_kpi
+  select 21
+         ,2
+         ,'案均未决金额'
+         ,round(sum(t.sumclaim)/10000,2)
+  from   lzm_hainan_claim_main t
+  where  t.casetype = '未结案'
+  or     (t.casetype = '正常结案' and trunc(t.realpaydate) > &p_date)
+  or     (t.casetype in ('注销','拒赔','零结案') and trunc(t.endcasedate) > &p_date);
+commit;
+--(21.3)
+insert into lzm_hainan_kpi
+  select 21
+         ,3
+         ,'案均未决金额'
+         ,count(*)
+  from   lzm_hainan_claim_main t
+  where  t.casetype = '未结案'
+  or     (t.casetype = '正常结案' and trunc(t.realpaydate) > &p_date)
+  or     (t.casetype in ('注销','拒赔','零结案') and trunc(t.endcasedate) > &p_date);
+commit;
+--(21.1)
+insert into lzm_hainan_kpi
+  select 21
+         ,1
+         ,'案均未决金额'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                  / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,2)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '21';
+commit;
+--------------------------------------------------------------------------------------------------
+-- 15 直接理赔费用
+-- 15.1 老理赔
+drop table lzm_hainan_charge;
+create table lzm_hainan_charge
+as
+  select t1.claimno
+         ,sum(t3.chargeamount) as 直接理赔费用
+  from   lzm_hainan_claim_main t1
+  join   prplcompensate t2
+  on     t2.claimno = t1.claimno
+  and    t2.underwriteflag in ('1','3')
+  join   prplcharge t3
+  on     t2.compensateno = t3.compensateno
+  and    t3.chargecode <> '9916'
+  where  t1.casetype in ('注销','拒赔','零结案')
+  and    trunc(t1.endcasedate) between trunc(&p_date,'yyyy') and &p_date
+  and    t1.sourceflag = 'old'
+  group by
+         t1.claimno
+  union
+  select t1.claimno
+         ,sum(t3.chargeamount) as 直接理赔费用
+  from   lzm_hainan_claim_main t1
+  join   prplcompensate t2
+  on     t2.claimno = t1.claimno
+  and    t2.underwriteflag in ('1','3')
+  join   prplcharge t3
+  on     t2.compensateno = t3.compensateno
+  and    t3.chargecode <> '9916'
+  where  t1.casetype = '正常结案'
+  and    trunc(t1.realpaydate) between trunc(&p_date,'yyyy') and &p_date
+  and    t1.sourceflag = 'old'
+  group by
+         t1.claimno;
+    
+-- 15.2 新理赔
+insert into lzm_hainan_charge
+  select t1.claimno
+         ,sum(t3.chargeamount) as 直接理赔费用
+  from   lzm_hainan_claim_main t1
+  join   clmbusi.prplcompensate t2
+  on     t2.claimno = t1.claimno
+  and    t2.underwriteflag in ('1','3')
+  and    t2.validstatus is null
+  join   clmbusi.prplcharge t3
+  on     t2.compensateno = t3.compensateno
+  and    t3.chargecode <> '9916'
+  where  t1.casetype in ('注销','拒赔','零结案')
+  and    trunc(t1.endcasedate) between trunc(&p_date,'yyyy') and &p_date
+  and    t1.sourceflag = 'new'
+  group by
+         t1.claimno
+  union
+  select t1.claimno
+         ,sum(t3.chargeamount) as 直接理赔费用
+  from   lzm_hainan_claim_main t1
+  join   clmbusi.prplcompensate t2
+  on     t2.claimno = t1.claimno
+  and    t2.underwriteflag in ('1','3')
+  and    t2.validstatus is null
+  join   clmbusi.prplcharge t3
+  on     t2.compensateno = t3.compensateno
+  and    t3.chargecode <> '9916'
+  where  t1.casetype = '正常结案'
+  and    trunc(t1.realpaydate) between trunc(&p_date,'yyyy') and &p_date
+  and    t1.sourceflag = 'new'
+  group by
+         t1.claimno;
+commit;
+-------------------------------------------------------------
+--(22) 已决案均直接理赔费用
+--(22.2)
+insert into lzm_hainan_kpi
+  select 22
+         ,2
+         ,'已决案均直接理赔费用'
+         ,round(sum(t.直接理赔费用)/10000,2)
+  from   lzm_hainan_charge t;
+commit;
+--(22.3)
+insert into lzm_hainan_kpi
+  select 22
+         ,3
+         ,'已决案均直接理赔费用'
+         ,t.c_value
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '16'
+  and    t.id_no_2 = '3';
+commit;
+--(22.1)
+insert into lzm_hainan_kpi
+  select 22
+         ,1
+         ,'已决案均直接理赔费用'
+         ,round(sum(case when t.id_no_2 = '2' then t.c_value else 0 end)
+                  / sum(case when t.id_no_2 = '3' then t.c_value else 0 end)
+                ,2)
+  from   lzm_hainan_kpi t
+  where  t.id_no_1 = '22';
+commit;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 

@@ -1,0 +1,216 @@
+drop table lzm_tjbf;
+create table lzm_tjbf
+as 
+select t.policyno as 保单号,
+       null as 批单号,
+       t.classcode as 险类代码,
+       t.riskcode as 险种代码,
+       t.businessnature  as 业务来源1代码,
+       t2.businessnaturename as 业务来源1名称,
+       nvl(t.Businessnature2, t.Businessnature) as 业务来源2代码,
+       t2.businessnaturename as 业务来源2名称,
+       t.Appliname as 投保人名称,
+       t.insuredname as 被保险人名称,
+       t.startdate as 起保日期,
+       t.underwriteenddate as 核保通过日期,
+       t.statdate as 统计日期,
+       t.comcode as 归属机构代码,
+       t3.comname as 归属机构名称,
+       t.Handler1code as 归属业务员代码,
+       t4.username as 归属业务员名称,
+       case
+         when t.Riskcode not in ('JAK', 'ECU', 'JHE') then
+          t.cnySumpremium * t.Coinsrate / 100
+         else
+          0
+       end 保费,
+       t.vat as 税
+  from cgcmain t
+  left join cg_dim_busi t2
+    on t.businessnature = t2.businessnature
+  left join dimcompany t3
+    on t.comcode = t3.comcode
+  left join dimuser t4
+    on t.handler1code = t4.usercode
+ where t.statdate between date '2017-01-01' and date
+ '2017-01-19'
+   and t.comcode like '5301%'
+   and (t.Statflag = 'Y' or t.Statflag is null)
+   and t.Underwriteenddate <= date
+ '2017-01-19'
+   and t.cnySumpremium * t.Coinsrate / 100 <> 0
+union all
+select t.policyno as 保单号,
+       t.EndorseNo as 批单号,
+       t.classcode as 险类代码,
+       t.riskcode as 险种代码,
+       t.businessnature  as 业务来源1代码,
+       t2.businessnaturename as 业务来源1名称,
+       nvl(t.Businessnature2, t.Businessnature) as 业务来源2代码,
+       t2.businessnaturename as 业务来源2名称,
+       t.Appliname as 投保人名称,
+       t.insuredname as 被保险人名称,
+       t.startdate as 起保日期,
+       t.underwriteenddate as 核保通过日期,
+       t.statdate as 统计日期,
+       t.comcode as 归属机构代码,
+       t3.comname as 归属机构名称,
+       t.Handler1code as 归属业务员代码,
+       t4.username as 归属业务员名称,
+       case
+         when t.Riskcode not in ('JAK', 'ECU', 'JHE') then
+          t.cnychgSumpremium * t.Coinsrate / 100
+         else
+          0
+       end as 保费,
+       t.chgvat as 税
+  from cgpmain t
+  left join cg_dim_busi t2
+    on t.businessnature = t2.businessnature
+  left join dimcompany t3
+    on t.comcode = t3.comcode
+  left join dimuser t4
+    on t.handler1code = t4.usercode
+ where t.statdate between date '2017-01-01' and date'2017-01-19'
+   and t.comcode like '5301%'
+   and t.Underwriteenddate <= date'2017-01-19'
+   and (t.cnychgSumpremium * t.Coinsrate / 100 <> 0 or
+       t.cnychgSumamount * t.Coinsrate / 100 <> 0)
+       
+union all
+select t.policyno as 保单号,
+       null as 批单号,
+       t.classcode as 险类代码,
+       t.riskcode as 险种代码,
+       t.businessnature  as 业务来源1代码,
+       t2.businessnaturename as 业务来源1名称,
+       nvl(t.Businessnature2, t.Businessnature) as 业务来源2代码,
+       t2.businessnaturename as 业务来源2名称,
+       t.Appliname as 投保人名称,
+       t.insuredname as 被保险人名称,
+       t.startdate as 起保日期,
+       t.underwriteenddate as 核保通过日期,
+       t.statdate as 统计日期,
+       t.comcode as 归属机构代码,
+       t3.comname as 归属机构名称,
+       t.Handler1code as 归属业务员代码,
+       t4.username as 归属业务员名称,
+       t5.Cnyallocfee * t.Coinsrate / 100 as 保费,
+       t.vat as 税
+  from cgcmain t
+  left join cg_dim_busi t2
+    on t.businessnature = t2.businessnature
+  left join dimcompany t3
+    on t.comcode = t3.comcode
+  left join dimuser t4
+    on t.handler1code = t4.usercode
+  join cgcalloc t5
+    on t.policyno = t5.policyno
+ where t.statdate between date '2017-01-01' and date
+ '2017-01-19'
+   and t.comcode like '5301%'
+   and t.riskcode IN ('JAK', 'ECU', 'JHE')
+   and (t.Statflag = 'Y' or t.Statflag is null)
+   and t.Underwriteenddate <= date
+ '2017-01-19'
+   and t5.Cnyallocfee * t.Coinsrate / 100 <> 0
+union all
+select t.policyno as 保单号,
+       null as 批单号,
+       t.classcode as 险类代码,
+       t.riskcode as 险种代码,
+       t.businessnature  as 业务来源1代码,
+       t2.businessnaturename as 业务来源1名称,
+       nvl(t.Businessnature2, t.Businessnature) as 业务来源2代码,
+       t2.businessnaturename as 业务来源2名称,
+       t.Appliname as 投保人名称,
+       t.insuredname as 被保险人名称,
+       t.startdate as 起保日期,
+       t.underwriteenddate as 核保通过日期,
+       t.statdate as 统计日期,
+       t.comcode as 归属机构代码,
+       t3.comname as 归属机构名称,
+       t.Handler1code as 归属业务员代码,
+       t4.username as 归属业务员名称,
+          t5.Cnychgallocfee * t.Coinsrate / 100 as 保费,
+       t.chgvat as 税
+  from cgpmain t
+  left join cg_dim_busi t2
+    on t.businessnature = t2.businessnature
+  left join dimcompany t3
+    on t.comcode = t3.comcode
+  left join dimuser t4
+    on t.handler1code = t4.usercode
+  join cgpalloc t5
+    on t.Endorseno = t5.Endorseno
+ where t.statdate between date '2017-01-01' and date
+ '2017-01-19'
+   and t.comcode like '5301%'
+   and t.riskcode IN ('JAK', 'ECU', 'JHE')
+   and t.Underwriteenddate <= date
+ '2017-01-19'
+   and t5.Cnychgallocfee * t.Coinsrate / 100 <> 0
+union all 
+select t.policyno as 保单号,
+       null as 批单号,
+       t.classcode as 险类代码,
+       t.riskcode as 险种代码,
+       t.businessnaturecode  as 业务来源1代码,
+       t2.businessnaturename as 业务来源1名称,
+       nvl(t.Businessnature2, t.Businessnaturecode) as 业务来源2代码,
+       t2.businessnaturename as 业务来源2名称,
+       t.Appliname as 投保人名称,
+       t.insuredname as 被保险人名称,
+       t.startdate as 起保日期,
+       t.underwriteenddate as 核保通过日期,
+       t.statdate as 统计日期,
+       t.comcode as 归属机构代码,
+       t3.comname as 归属机构名称,
+       t.Handler1code as 归属业务员代码,
+       t4.username as 归属业务员名称,
+       t.Sumpremium as 保费,
+       t.vat as 税
+  from cgcmaincar t
+  left join cg_dim_busi t2
+    on t.Businessnaturecode = t2.businessnature
+  left join dimcompany t3
+    on t.comcode = t3.comcode
+  left join dimuser t4
+    on t.handler1code = t4.usercode
+ where t.statdate between date '2017-01-01' and date
+ '2017-01-19'
+   and t.comcode like '5301%'
+   and (t.Statflag = 'Y' or t.Statflag is null)
+   and t.Underwriteenddate <= date'2017-01-19'
+   and t.Sumpremium <> 0
+union all
+select t.policyno as 保单号,
+       t.Endorseno as 批单号,
+       t.classcode as 险类代码,
+       t.riskcode as 险种代码,
+       t.businessnaturecode  as 业务来源1代码,
+       t2.businessnaturename as 业务来源1名称,
+       nvl(t.Businessnature2, t.Businessnaturecode) as 业务来源2代码,
+       t2.businessnaturename as 业务来源2名称,
+       t.Appliname as 投保人名称,
+       t.insuredname as 被保险人名称,
+       t.startdate as 起保日期,
+       t.underwriteenddate as 核保通过日期,
+       t.statdate as 统计日期,
+       t.comcode as 归属机构代码,
+       t3.comname as 归属机构名称,
+       t.Handler1code as 归属业务员代码,
+       t4.username as 归属业务员名称,
+       t.chgSumpremium as 保费,
+       t.chgvat as 税
+  from cgpmaincar t
+  left join cg_dim_busi t2
+    on t.Businessnaturecode = t2.businessnature
+  left join dimcompany t3
+    on t.comcode = t3.comcode
+  left join dimuser t4
+    on t.handler1code = t4.usercode
+ where t.statdate between date '2017-01-01' and date'2017-01-19'
+   and t.comcode like '5301%'
+   and t.Underwriteenddate <= date'2017-01-19'
+   and (t.chgSumpremium <> 0 or t.chgSumamount <> 0)

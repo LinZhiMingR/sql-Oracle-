@@ -1,0 +1,331 @@
+----筛选意外险(临时表)
+create table lzm_PrpLclaim01
+as  
+   select t.claimno,
+          t.policyno,
+          t.riskcode,
+          t.damagestartdate,
+          t.claimdate,
+          t.endcasedate,
+          t.Sumpaid,
+          t.canceldate,
+          t.comcode,
+          t.registno,
+          t.currency
+ from PrpLclaim t 
+where t.classcode = 'E'
+
+--调估日期
+create table lzm_PrpLclaimLoss
+as select * from 
+(select p.claimno,max(p.inputdate) as inputdate 
+from PrpLclaimLoss p,LZM_PRPLCLAIM01 t
+where p.claimno = t.claimno
+and  (to_char(p.inputdate, 'YYYYMMDD') <='20161031')
+group by p.claimno) 
+
+--筛选日期(临时表2)
+create table LZM_PRPLCLAIM02
+as select * from(select distinct
+       t.claimno,
+       t.policyno,
+       t.riskcode,
+       t.damagestartdate,
+       t.claimdate,
+       t.endcasedate,
+       t.canceldate,
+       t.Sumpaid * nvl(c.exchrate,1) as sumpaid,
+       t.comcode,
+       t.registno,
+       t.currency
+  from LZM_PRPLCLAIM01 t 
+  left join PrpLrecase p
+    on t.claimno = p.claimno
+  left join lzm_PrpLclaimLoss lp
+    on t.claimno = lp.claimno
+left join  prpdexch c
+on     c.basecurrency = t.currency
+and    c.exchcurrency = 'CNY'
+and    case when t.claimdate >= date'2011-01-01' 
+              then t.claimdate
+            else trunc(t.claimdate, 'yyyy') 
+       end = c.exchdate
+   where ((to_char(t.claimdate, 'YYYYMMDD') between '20160101' and '20161031')
+   or (to_char(t.endcasedate, 'YYYYMMDD') between '20160101' and '20161031')
+   or (to_char(p.opencasedate, 'YYYYMMDD') between '20160101' and '20161031') 
+   or (to_char(lp.inputdate, 'YYYYMMDD') between '20160101' and '20161031')));
+
+--计算书号，类型，核赔通过时间
+create table lzm_Prplcompensate
+as 
+select p.claimno, 
+        p.compensateno,
+        (case when (p.compensatetype = '3'or p.casetype = '7') then '费用计算书'
+            else'标的计算书'
+          end)as compensatetype ,
+        p.underwriteenddate,
+        p.sumpaid 
+  from Prplcompensate p, LZM_PRPLCLAIM02 t
+ where t.claimno = p.claimno
+ and (to_char(p.underwriteenddate, 'YYYYMMDD') <= '20161031')
+   and p.underwriteflag in ('1', '3')
+   
+   
+--立案金额
+create table lzm_PrpLclaimLoss_claim
+as select claimno,
+       sumclaim
+from(select t.claimno,
+       t.inputdate,
+       t.sumclaim,
+       row_number() over(partition by t.claimno order by t.inputdate) as rn 
+from (select p.claimno,
+             p.inputdate,
+             sum(p.sumclaim * nvl(c.exchrate,1))as sumclaim 
+from  PrpLclaimLoss p
+join  LZM_PRPLCLAIM02 t
+on    p.claimno = t.claimno
+left join  prpdexch c
+on     c.basecurrency = p.currency
+and    c.exchcurrency = 'CNY'
+and    case when p.inputdate >= date'2011-01-01' 
+              then p.inputdate
+            else trunc(p.inputdate, 'yyyy') 
+       end = c.exchdate
+where (to_char(p.inputdate, 'YYYYMMDD')<= '20161031')
+group by p.claimno,p.inputdate)t)
+where rn = '1'
+
+--临时表3
+create table LZM_PRPLCLAIM03
+as select * from 
+(select t.claimno,
+       t.policyno,
+       t.riskcode,
+       d.comname2,
+       d.comname3,
+       t.damagestartdate,
+       pt.reportdate,
+       t.claimdate,
+       lc.sumclaim,
+       lp.underwriteenddate,
+       t.endcasedate,
+       t.canceldate,
+       lp.Sumpaid,
+       lp.compensateno,
+       lp.compensatetype,
+       t.comcode,   
+       t.currency
+from LZM_PRPLCLAIM02 t 
+left join dimcompany d
+  on t.comcode = d.comcode
+left join PrpLregist pt
+  on t.registno = pt.registno
+left join lzm_Prplcompensate lp
+  on t.claimno = lp.claimno
+left join lzm_PrpLclaimLoss_claim lc  
+  on t.claimno = lc.claimno
+  ) ;
+
+--最终表
+create table LZM_PRPLCLAIM
+as select *
+from(select t.claimno as 立案号,
+       t.compensateno as 计算书号, 
+       t.compensatetype as 计算书类型,
+       t.policyno as 保单号,
+       t.riskcode as 险种,
+       t.comname2 as 分公司,
+       t.comname3 as 三级机构,
+       t.damagestartdate as 出险时间,
+       t.reportdate as 报案时间,
+       t.claimdate as 立案时间,
+       t.sumclaim* nvl(b.coinsrate,100)/100 as 立案金额,
+       t.underwriteenddate as  核赔通过时间,
+       t.endcasedate as 结案时间,
+       t.Sumpaid * nvl(b.coinsrate,100)/100 as 已决赔款金额,
+       t.canceldate as 注销时间      
+  from LZM_PRPLCLAIM03 t
+  join   prpcmain a
+  on     t.policyno=a.PolicyNo
+  left join  prpccoins b
+  on     b.policyno = a.policyno
+  and    b.coinstype = '1'
+  and    a.coinsflag = '1'
+)t
+
+-----------------------------------------------------------
+--重开案件已决金额
+create table lzm_PrpLcompensate_paid
+as select * from
+(select t.claimno,
+        t.recancelflag,
+       sum(t.sumpaid) as sumpaid 
+from(select p1.claimno as claimno,
+            p1.sumpaid * nvl(c.exchrate,1) as sumpaid,
+            p1.recancelflag as recancelflag 
+from PrpLcompensate p1
+join PrpLrecase p2
+on  p1.claimno = p2.claimno
+and p1.recancelflag = p2.recancelflag
+left join LZM_PRPLCLAIM02 lp
+on  p1.claimno = lp.claimno
+left join  prpdexch c
+on     c.basecurrency = p1.currency
+and    c.exchcurrency = 'CNY'
+and    case when p1.underwriteenddate >= date'2011-01-01' 
+              then p1.underwriteenddate
+            else trunc(p1.underwriteenddate, 'yyyy') 
+       end = c.exchdate
+)t
+group by t.claimno,t.recancelflag)
+
+------重开案前已决金额
+create table lzm_PrpLcompensate_bef
+as
+select claimno,
+       recancelflag,
+       (sum(sumpaid) over (partition by claimno order by recancelflag /*nulls first 空值置顶*/)) - sumpaid as 重开案前已决金额
+from(select      p1.claimno,
+            nvl(p1.recancelflag,'00') as recancelflag ,--把空赋为00
+            sum(p1.sumpaid * nvl(c.exchrate,1)) as sumpaid
+from PrpLcompensate p1
+/*join PrpLrecase p2
+on  p1.claimno = p2.claimno*/
+left join LZM_PRPLCLAIM02 lp
+on  p1.claimno = lp.claimno
+left join  prpdexch c
+on     c.basecurrency = p1.currency
+and    c.exchcurrency = 'CNY'
+and    case when p1.underwriteenddate >= date'2011-01-01' 
+              then p1.underwriteenddate
+            else trunc(p1.underwriteenddate, 'yyyy') 
+       end = c.exchdate
+where exists (select 1 from PrpLrecase p2 
+                       where p2.claimno = p1.claimno)
+group by p1.claimno,p1.recancelflag order by p1.claimno, p1.recancelflag )
+
+
+---------  核赔通过时间,核赔金额
+
+create table lzm_Prplcompensate01
+as
+select t.claimno ,
+       max(t.underwriteenddate)as 核赔通过时间,
+       sum(t.sumpaid) as 核赔金额
+from lzm_Prplcompensate t
+group by t.claimno
+
+
+--重开案最终表
+
+create table lzm_PrpLrecase_fin
+as
+select t.claimno as 立案号,
+       t.opencasedate as 案件重开时间,
+       0 as 重开后估损金额,
+       t.closecasedate as 重开案件结案时间,
+       lb.重开案前已决金额 * nvl(b.coinsrate,100)/100 as 重开案前已决金额,                                
+       lp.sumpaid * nvl(b.coinsrate,100)/100 as 重开案件已决金额,
+       ls.核赔通过时间
+ from PrpLrecase t 
+ left join lzm_PrpLcompensate_paid lp
+        on t.claimno = lp.claimno
+        and t.recancelflag = lp.recancelflag
+  join   prpcmain a
+  on     t.policyno=a.PolicyNo
+ left join  prpccoins b
+  on     b.policyno = a.policyno
+  and    b.coinstype = '1'
+  and    a.coinsflag = '1'
+ left join lzm_Prplcompensate01 ls
+      on  t.claimno = ls.claimno 
+ left join lzm_PrpLcompensate_bef lb
+      on  t.claimno = lb.claimno
+      and t.recancelflag = lb.recancelflag
+where  t.claimno in (select t.立案号 from LZM_PRPLCLAIM t)
+and   (to_char(t.opencasedate, 'YYYYMMDD') <= '20161031')
+
+-------------------------------------------------------------
+--估损调整时间,调整后立案金额(临时表)  
+create table lzm_PrpLclaimLoss_01
+as select * from(select 
+            p.claimno,           
+            p.inputdate,
+            sum(p.sumclaim) as sumclaim 
+from PrpLclaimLoss p
+where p.claimno in(select t.claimno from  LZM_PRPLCLAIM03 t)
+and (to_char(p.inputdate, 'YYYYMMDD')<= '20161031')/*p.inputdate<=date'2016-10-31'*/
+group by p.claimno,p.inputdate)
+
+--估损调整时间,调整后立案金额
+create table lzm_PrpLclaimLo
+as 
+select t.claimno as 立案号,
+       t.inputdate as 估损调整时间,
+       sum(t.sumclaim) over (partition by t.claimno order by t.inputdate)as 调整后立案金额
+       from lzm_PrpLclaimLoss_01 t
+       
+--去重
+create table LZM_PRPLCLAIM04
+as
+select distinct t.立案号,
+                t.保单号,
+                t.分公司,
+                t.三级机构,
+                t.出险时间,
+                t.报案时间,
+                t.立案时间,
+                t.立案金额,
+                t.结案时间          
+from LZM_PRPLCLAIM t 
+       
+
+       
+--临时表       
+create table lzm_PrpLclaimLo1
+as 
+select a.立案号,
+       a.保单号,
+       a.分公司,
+       a.三级机构,
+       a.出险时间,
+       a.报案时间,
+       a.立案时间,
+       t.operatorcode as 立案人代码,
+       b.username as 立案人姓名,
+       a.立案金额,
+       a.结案时间
+from prplclaim t
+join LZM_PRPLCLAIM04 a
+on a.立案号 = t.claimno
+left join
+      prpduser b
+on     b.usercode = t.operatorcode
+
+
+
+       
+--最终表
+create table lzm_PrpLclaimLo1_fin
+as
+select t.立案号, 
+       t.保单号,
+       t.分公司,
+       t.三级机构,
+       t.出险时间,
+       t.报案时间,
+       t.立案时间,
+       t.立案人代码,
+       t.立案人姓名,
+       t.立案金额,
+       lp.估损调整时间,
+       lp.调整后立案金额,
+       ls.核赔金额,
+       ls.核赔通过时间,
+       t.结案时间
+ from lzm_PrpLclaimLo1 t
+left join lzm_PrpLclaimLo lp
+      on  t.立案号=lp.立案号
+left join lzm_Prplcompensate01 ls
+      on  t.立案号 = ls.claimno 

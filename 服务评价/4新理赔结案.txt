@@ -1,0 +1,507 @@
+drop table lzm_new_endcasedate_notnull;
+drop table lzm_new_not_paid;
+drop table lzm_new_realpaydate_fee_pre;
+drop table lzm_new_realpaydate_fee;
+drop table lzm_new_realpaydate_pre;
+drop table lzm_new_realpaydate;
+drop table lzm_new_end_zj_fee_pre;
+drop table lzm_new_end_zj_fee;
+drop table lzm_new_end_zj_pre;
+drop table lzm_new_end_zj;
+drop table lzm_new_endcase_main;
+drop table lzm_new_end_gg1;
+drop table lzm_new_end_recase;
+drop table lzm_new_end_list;
+
+
+-- 1 所有结案日期不为空的案件
+create table lzm_new_endcasedate_notnull
+as
+  select t.claimno
+         ,t.riskcode
+         ,t.endcasedate
+         ,case when t.casetype = '0' then '注销'
+               when t.casetype = '1' then '拒赔'
+               when t.sumdutypaid = 0 then '零结案'
+               else '正常结案'
+          end as casetype
+  from   prplclaim t
+  where  t.endcasedate is not null;
+  
+-- 2 未支付的立案
+create table lzm_new_not_paid
+as
+  select b.Claimno
+  from   prplpayinfolist a
+  join   prplcompensate b
+  on     a.compensateno = b.compensateno
+  join   prpjplanfee c
+  on     a.payid = c.Certino
+  where  b.underwriteflag in ('1','3')
+  and    b.validstatus is null
+  and    b.compensatemode <> '14'
+  group by b.Claimno
+  having sum(c.RealPayRefFee) - sum(c.planfee1) < 0
+  union
+  select a.Claimno
+  from   prplcompensate a
+  join   prpjplanfee b
+  on     a.compensateno = b.certino
+  where  a.underwriteflag in ('1','3')
+  and    a.validstatus is null
+  and    a.compensatemode <> '14'
+  group by a.Claimno
+  having sum(b.RealPayRefFee) - sum(b.planfee1) < 0
+  --预赔
+  union
+  select a.Claimno
+  from   prplprepay a
+  join   prplpayinfolist b
+  on     a.precompensateno = b.compensatetype
+  join   prpjplanfee c
+  on     b.payid = c.certino
+  where  a.underwriteflag in ('1','3')
+  group by a.Claimno
+  having sum(c.RealPayRefFee) - sum(c.planfee1) < 0;
+  
+-- 3 支付时间与核赔通过时间（不含理赔费用）
+create table lzm_new_realpaydate_pre
+as
+  select  a.claimno
+         ,b.compensateno
+         ,c.payid
+         ,b.underwriteenddate
+         ,d.realpaydate
+         ,d.transtime
+  from   lzm_new_endcasedate_notnull a
+  join   prplcompensate b
+  on     a.claimno = b.claimno
+  and    b.underwriteflag in ('1','3')
+  and    b.validstatus is null
+  and    b.compensatemode <> '14'
+  join   prplpayinfolist c
+  on     b.compensateno = c.compensateno
+  left join
+         prpjrefrec d
+  on     c.payid = d.certino
+  and    d.realpaydate is not null
+  where  (b.compensateflag <> '1' or b.compensateflag is null or (b.compensateflag = '1' and b.sumdutypaid >0)) ----剔除费用计算书
+  and    (b.compensatemode <> '7' or b.compensatemode is null or (b.compensatemode = '7' and b.sumdutypaid >0)) --剔除间接理赔费用计算书
+  union all
+  select  a.claimno
+         ,b.compensateno
+         ,c.payid
+         ,b.underwriteenddate
+         ,d.realpaydate
+         ,d.transtime
+  from   lzm_new_endcasedate_notnull a
+  join   prplcompensate b
+  on     a.claimno = b.claimno
+  and    b.underwriteflag in ('1','3')
+  and    b.validstatus is null
+  and    b.compensatemode <> '14'
+  join   prplpayinfolist c
+  on     b.compensateno = c.compensateno
+  left join
+         prpjrefrechis d
+  on     c.payid = d.certino
+  and    d.realpaydate is not null
+  where  (b.compensateflag <> '1' or b.compensateflag is null or (b.compensateflag = '1' and b.sumdutypaid >0)) ----剔除费用计算书
+  and    (b.compensatemode <> '7' or b.compensatemode is null or (b.compensatemode = '7' and b.sumdutypaid >0)) --剔除间接理赔费用计算书
+  --预赔
+  union
+  select a.claimno
+         ,b.precompensateno as compensateno
+         ,c.payid
+         ,b.underwriteenddate
+         ,d.realpaydate
+         ,d.transtime
+  from   lzm_new_endcasedate_notnull a
+  join   prplprepay b
+  on     a.claimno = b.claimno
+  join   prplpayinfolist c
+  on     b.precompensateno = c.compensateno
+  left join
+         prpjrefrec d
+  on     d.certino = c.payid
+  and    d.realpaydate is not null
+  where  b.underwriteflag in ('1','3')
+  union
+  select a.claimno
+         ,b.precompensateno as compensateno
+         ,c.payid
+         ,b.underwriteenddate
+         ,d.realpaydate
+         ,d.transtime
+  from   lzm_new_endcasedate_notnull a
+  join   prplprepay b
+  on     a.claimno = b.claimno
+  join   prplpayinfolist c
+  on     b.precompensateno = c.compensateno
+  left join
+         prpjrefrechis d
+  on     d.certino = c.payid
+  and    d.realpaydate is not null
+  where  b.underwriteflag in ('1','3');
+
+create table lzm_new_realpaydate
+as
+   select a.claimno
+          ,max(case when a.realpaydate is null then null
+                    else to_date(to_char(a.Realpaydate, 'yyyy-mm-dd') || ' ' || a.Transtime, 'yyyy-mm-dd hh24:mi:ss')
+               end) as realpaydate
+          ,max(a.underwriteenddate) as underwriteenddate
+   from   lzm_new_realpaydate_pre a
+   left join
+          lzm_new_not_paid b
+   on     a.claimno = b.claimno
+   where  b.claimno is null
+   group by a.claimno;
+
+-- 4 支付时间（含理赔费用）
+create table lzm_new_realpaydate_fee_pre
+as
+  select  a.claimno
+         ,b.compensateno
+         ,c.payid
+         ,b.underwriteenddate
+         ,d.realpaydate
+         ,d.transtime
+  from   lzm_new_endcasedate_notnull a
+  join   prplcompensate b
+  on     a.claimno = b.claimno
+  and    b.underwriteflag in ('1','3')
+  and    b.validstatus is null
+  and    b.compensatemode <> '14'
+  join   prplpayinfolist c
+  on     b.compensateno = c.compensateno
+  left join
+         prpjrefrec d
+  on     c.payid = d.certino
+  and    d.realpaydate is not null
+  union all
+  select  a.claimno
+         ,b.compensateno
+         ,c.payid
+         ,b.underwriteenddate
+         ,d.realpaydate
+         ,d.transtime
+  from   lzm_new_endcasedate_notnull a
+  join   prplcompensate b
+  on     a.claimno = b.claimno
+  and    b.underwriteflag in ('1','3')
+  and    b.validstatus is null
+  and    b.compensatemode <> '14'
+  join   prplpayinfolist c
+  on     b.compensateno = c.compensateno
+  left join
+         prpjrefrechis d
+  on     c.payid = d.certino
+  and    d.realpaydate is not null
+  --预赔
+  union
+  select a.claimno
+         ,b.precompensateno as compensateno
+         ,c.payid
+         ,b.underwriteenddate
+         ,d.realpaydate
+         ,d.transtime
+  from   lzm_new_endcasedate_notnull a
+  join   prplprepay b
+  on     a.claimno = b.claimno
+  join   prplpayinfolist c
+  on     b.precompensateno = c.compensateno
+  left join
+         prpjrefrec d
+  on     d.certino = c.payid
+  and    d.realpaydate is not null
+  where  b.underwriteflag in ('1','3')
+  union
+  select a.claimno
+         ,b.precompensateno as compensateno
+         ,c.payid
+         ,b.underwriteenddate
+         ,d.realpaydate
+         ,d.transtime
+  from   lzm_new_endcasedate_notnull a
+  join   prplprepay b
+  on     a.claimno = b.claimno
+  join   prplpayinfolist c
+  on     b.precompensateno = c.compensateno
+  left join
+         prpjrefrechis d
+  on     d.certino = c.payid
+  and    d.realpaydate is not null
+  where  b.underwriteflag in ('1','3');
+
+create table lzm_new_realpaydate_fee
+as
+   select a.claimno
+          ,max(case when a.realpaydate is null then null
+                    else to_date(to_char(a.Realpaydate, 'yyyy-mm-dd') || ' ' || a.Transtime, 'yyyy-mm-dd hh24:mi:ss')
+               end) as realpaydate
+   from   lzm_new_realpaydate_fee_pre a
+   left join
+          lzm_new_not_paid b
+   on     a.claimno = b.claimno
+   where  b.claimno is null
+   group by a.claimno;
+
+
+-- 5 资金支付时间（不含理赔费用）
+create table lzm_new_end_zj_pre
+as
+  select /*+parallel(c 8)*/a.claimno,nvl(c.paybatchno,c.certino) as paybatchno
+  from   lzm_new_realpaydate_pre a
+  left join
+         lzm_new_not_paid b
+  on     a.claimno = b.claimno
+  join   prpjplanfee c
+  on     c.certino = a.payid
+  where  b.claimno is null
+  union
+  select /*+parallel(c 8)*/a.claimno,nvl(c.paybatchno,c.certino) as paybatchno
+  from   lzm_new_realpaydate_pre a
+  left join
+         lzm_new_not_paid b
+  on     a.claimno = b.claimno
+  join   prpjplanfeehis c
+  on     c.certino = a.payid
+  where  b.claimno is null;
+  
+create table lzm_new_end_zj
+as
+  select claimno,max(d_paysentdate) as d_paysentdate
+  from
+         (
+          select /*+parallel(b 8)*/
+                 a.claimno
+                 ,b.c_memo
+                 ,b.d_paysentdate
+                 ,row_number() over(partition by a.claimno,b.c_memo order by b.d_paysentdate) as rn
+          from   lzm_new_end_zj_pre a
+          join   reportnet.tse_payments b
+          on     a.paybatchno = b.c_memo
+          where  b.c_paystate in ('2','3','4')
+         )
+  where  rn = 1
+  group by claimno;
+
+-- 6 资金支付时间（含理赔费用）
+create table lzm_new_end_zj_fee_pre
+as
+  select /*+parallel(c 8)*/a.claimno,nvl(c.paybatchno,c.certino) as paybatchno
+  from   lzm_new_realpaydate_fee_pre a
+  left join
+         lzm_new_not_paid b
+  on     a.claimno = b.claimno
+  join   prpjplanfee c
+  on     c.certino = a.payid
+  where  b.claimno is null
+  union
+  select /*+parallel(c 8)*/a.claimno,nvl(c.paybatchno,c.certino) as paybatchno
+  from   lzm_new_realpaydate_fee_pre a
+  left join
+         lzm_new_not_paid b
+  on     a.claimno = b.claimno
+  join   prpjplanfeehis c
+  on     c.certino = a.payid
+  where  b.claimno is null;
+  
+create table lzm_new_end_zj_fee
+as
+  select claimno,max(d_paysentdate) as d_paysentdate
+  from
+         (
+          select /*+parallel(b 8)*/
+                 a.claimno
+                 ,b.c_memo
+                 ,b.d_paysentdate
+                 ,row_number() over(partition by a.claimno,b.c_memo order by b.d_paysentdate) as rn
+          from   lzm_new_end_zj_pre a
+          join   reportnet.tse_payments b
+          on     a.paybatchno = b.c_memo
+          where  b.c_paystate in ('2','3','4')
+         )
+  where  rn = 1
+  group by claimno;
+
+-- 7 圈定已决已付案件
+create table lzm_new_endcase_main
+as
+  select d.policyno
+         ,d.registno
+         ,d.claimno
+         ,a.riskcode
+         ,d.Damageflag
+         ,h.damagestartdate
+         ,h.damagestarthour
+         ,e.reportdate
+         ,e.reporthour
+         ,d.claimdate
+         ,a.casetype
+         ,greatest(a.endcasedate,nvl(nvl(b1.d_paysentdate,c1.realpaydate),a.endcasedate)) as endcasedate --结案时间和支付时间（含费用）取大者
+         ,nvl(b2.d_paysentdate,c2.realpaydate) as realpaydate
+         ,c2.underwriteenddate
+         ,d.sumdutypaid
+         ,d.recaseno
+         ,f.comname1
+         ,f.comname2
+  from   lzm_new_endcasedate_notnull a
+  left join
+         lzm_new_end_zj_fee b1 --资金系统支付时间（含费用）
+  on     b1.claimno = a.claimno
+  left join
+         lzm_new_end_zj b2 --资金系统支付时间（不含费用）
+  on     b2.claimno = a.claimno
+  left join
+         lzm_new_realpaydate_fee c1 --收付费系统支付时间（含费用）
+  on     a.claimno = c1.claimno
+  left join
+         lzm_new_realpaydate c2 --收付费系统支付时间（不含费用）
+  on     a.claimno = c2.claimno
+  left join
+         prplclaim d
+  on     a.claimno = d.claimno
+  left join
+         prplregist e
+  on     d.registno = e.registno
+  left join
+         dimcompany f
+  on     e.comcode = f.comcode
+  left join
+         prplaccidentcaserelated g
+  on     e.registno = g.registno
+  left join
+         prplaccidentinfo h
+  on     g.accidentno = h.accidentno
+  where trunc(greatest(a.endcasedate,nvl(nvl(b1.d_paysentdate,c1.realpaydate),a.endcasedate))) between trunc(date'2016-08-31','yy') and date'2016-08-31'
+  and not exists (select 'x' from lzm_new_not_paid t where t.claimno = a.claimno);
+
+-- 6 盗抢险
+create table lzm_new_end_gg1
+as
+  --估损
+  select a.claimno
+  from   prplclaimloss a
+  join   lzm_new_endcase_main b
+  on     a.claimno = b.claimno
+  where  a.kindcode in ('G','G1')
+  --人员赔付信息表
+  union
+  select a.claimno
+  from   lzm_new_realpaydate_fee_pre a
+  join   prplpersonloss b
+  on     a.compensateno = b.compensateno
+  where  b.kindcode in ('G','G1')
+  --赔付标的信息表
+  union
+  select a.claimno
+  from   lzm_new_realpaydate_fee_pre a
+  join   prplloss b
+  on     a.compensateno = b.compensateno
+  where  b.kindcode in ('G','G1')
+  --赔款费用信息表
+  union
+  select a.claimno
+  from   lzm_new_realpaydate_fee_pre a
+  join   prplcharge b
+  on     a.compensateno = b.compensateno
+  where  b.kindcode in ('G','G1');
+
+  
+-- 7 重开时间
+create table lzm_new_end_recase
+as
+  select a.claimno,max(a.opencasedate) as opencasedate
+  from   prplrecase a
+  where exists (select 'x' from lzm_new_endcase_main b where a.claimno = b.claimno)
+  group by a.claimno;
+
+-- 8 提取结果：新理赔结案清单
+create table lzm_new_end_list
+as
+  select
+         '0000102016'||lpad(lzm_seq_02.nextval,10,0) as 主键
+         ,a.policyno as 保单号
+         ,a.registno as 报案号
+         ,a.claimno as 立案号
+         ,a.riskcode as 险种代码
+         ,decode(a.damageflag,'CI','01200','BI','01100') as 案件险种类型代码
+         ,to_char(to_date(to_char(a.damagestartdate, 'yyyy-mm-dd') || ' ' || a.damagestarthour, 'yyyy-mm-dd hh24:mi:ss'), 'yyyy-mm-dd hh24:mi:ss') as 出险时间
+         ,to_char(to_date(to_char(a.reportdate, 'yyyy-mm-dd') || ' ' || a.reporthour, 'yyyy-mm-dd hh24:mi:ss'), 'yyyy-mm-dd hh24:mi:ss') as 报案时间
+         ,to_char(a.claimdate,'yyyy-mm-dd hh24:mi:ss') as 立案时间
+         ,to_char(a.underwriteenddate,'yyyy-mm-dd hh24:mi:ss') as 核赔通过时间
+         ,to_char(a.endcasedate,'yyyy-mm-dd hh24:mi:ss') as 结案时间
+         ,to_char(a.realpaydate,'yyyy-mm-dd hh24:mi:ss') as 支付时间
+         ,nvl(a.sumdutypaid,0) as 结案金额
+         ,case when b.claimno is not null then '01' else '00' end as 是否盗抢
+         ,case when a.recaseno > 0 then '01' else '00' end as 是否重开案件
+         ,to_char(c.opencasedate, 'yyyy-mm-dd hh24:mi:ss') as 重开时间
+         ,decode(a.casetype,'正常结案','01','拒赔','02','零结案','03','注销','04') as 已决赔案类型
+         ,'000010'as 法人机构代码
+         ,case
+            when a.comname1 ='广东' and a.comname2 ='深圳分公司' then '440300'
+            when a.comname1 ='福建' and a.comname2 ='厦门分公司' then '350200'
+            when a.comname1 ='山东' and a.comname2 ='青岛分公司' then '370200'
+            when a.comname1 ='浙江' and a.comname2 ='宁波分公司' then '330200'
+            when a.comname1 ='辽宁' and a.comname2 ='大连分公司' then '210200'
+            when a.comname1 ='北京'  then '110000'
+            when a.comname1 ='天津'  then '120000'
+            when a.comname1 ='河北'  then '130000'
+            when a.comname1 ='山西'  then '140000'
+            when a.comname1 ='内蒙古'  then '150000'
+            when a.comname1 ='辽宁'  then '210000'
+            when a.comname1 ='吉林'  then '220000'
+            when a.comname1 ='黑龙江'  then '230000'
+            when a.comname1 ='上海'  then '310000'
+            when a.comname1 ='江苏'  then '320000'
+            when a.comname1 ='浙江'  then '330000'
+            when a.comname1 ='安徽'  then '340000'
+            when a.comname1 ='福建'  then '350000'
+            when a.comname1 ='江西'  then '360000'
+            when a.comname1 ='山东'  then '370000'
+            when a.comname1 ='河南'  then '410000'
+            when a.comname1 ='湖北'  then '420000'
+            when a.comname1 ='湖南'  then '430000'
+            when a.comname1 ='广东'  then '440000'
+            when a.comname1 ='广西'  then '450000'
+            when a.comname1 ='海南'  then '460000'
+            when a.comname1 ='重庆'  then '500000'
+            when a.comname1 ='四川'  then '510000'
+            when a.comname1 ='贵州'  then '520000'
+            when a.comname1 ='云南'  then '530000'
+            when a.comname1 ='西藏'  then '540000'
+            when a.comname1 ='陕西'  then '610000'
+            when a.comname1 ='甘肃'  then '620000'
+            when a.comname1 ='青海'  then '630000'
+            when a.comname1 ='宁夏'  then '640000'
+            when a.comname1 ='新疆'  then '650000'
+          end as 监管辖区代码
+         ,'0' as 是否含批赔计算书
+  from   lzm_new_endcase_main a
+  left join
+         lzm_new_end_gg1 b
+  on     a.claimno = b.claimno
+  left join
+         lzm_new_end_recase c
+  on     a.claimno = c.claimno;
+  
+--问题数据处理
+update lzm_new_end_list t
+set t.支付时间 = t.结案时间
+where t.已决赔案类型 = '01'
+and t.支付时间 is null
+and t.结案金额 > 1;
+commit;
+
+update lzm_new_end_list t
+set t.已决赔案类型 = '03',t.结案金额 = 0
+where t.已决赔案类型 = '01'
+and t.支付时间 is null
+and t.结案金额 <= 1;
+commit;
+
+--4、同一立案号中，出险时间<=报案时间
+update lzm_new_end_list t set t.报案时间 = t.出险时间 where 报案时间 < 出险时间;
+commit;                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         

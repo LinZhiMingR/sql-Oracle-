@@ -1,0 +1,97 @@
+
+--限制条件：DDG保单 ,业务来源2为直销渠道,中介为空
+drop table lzm_tmp_car;
+create table lzm_tmp_car
+as
+select * from ccic.PrpCmain t 
+ where t.riskcode = 'DDG'
+   and t.businessnature2 in('0101','0201','001','005')
+   and t.operatedate between date'2016-12-24' and date'2017-01-10'
+   and (t.comcode like '4101%' or t.comcode like '2301%')
+   and t.agentcode is null
+   ;
+
+--使用性质为家用、非营货
+drop table lzm_tmp_car1;
+create table lzm_tmp_car1
+as 
+select t.policyno,
+       t1.comname2 as 分公司,
+       t3.codecname as 使用性质,
+       t.sumpremium as 保费,
+       case
+         when t2.seatcount >= '6' then
+          '6座以上'
+         else
+          '6座以下'
+       end as 座位,
+       case
+         when t2.toncount / 1000 >= '2' then
+          '2吨以上'
+         else
+          '2吨以下'
+       end as 吨位,
+       t2.carclass as 车型分类,
+       t.operatedate as 签单日期,
+       nvl(t4.Autorenewalpointbi,0)+nvl(t4.Autorenewalpointci,0) as 积分数
+  from lzm_tmp_car t
+  left join dimcompany t1
+    on t.comcode = t1.comcode
+  left join CCIC.PRPCITEMCAR t2
+    on t.policyno = t2.policyno
+  left join prpdcode t3
+  on     t3.codecode = t2.UseNatureCode
+  and    lower(t3.codetype) = 'usenature'
+  left join prpcarautorenewal t4
+    on t.policyno = t4.policyno
+ where (t2.usenaturecode = '85' and t2.carkindcode in ('A0','01','02','03')
+        or
+        t2.usenaturecode in ('81','83','84')  and t2.carkindcode in ('H0','04','05','06','I0'))
+      ;
+
+--险别组合（单交、不含车损、含车损）
+--单交
+drop table lzm_danjiao;
+create table lzm_danjiao
+as
+select t.policyno,
+       t1.kindcode
+  from lzm_tmp_car1 t
+  left join PrpCitemKind t1
+    on t.policyno = t1.policyno
+where exists (select 1 from PrpCitemKind t1 where t.policyno = t1.policyno and t1.kindcode = 'BZ')
+ and not exists (select 1 from PrpCitemKind t1 where t.policyno = t1.policyno and t1.kindcode <> 'BZ');
+
+ --不含车损(0)、含车损(1)、单交(BZ)
+ drop table lzm_xianbie;
+ create table lzm_xianbie
+ as
+ select t.policyno,
+        to_char(sum(case when t1.kindcode = 'A' then '1' else '0' end)) kindcode
+  from lzm_tmp_car1 t
+  left join PrpCitemKind t1
+    on t.policyno = t1.policyno
+where not exists (select 1 from lzm_danjiao t1 where t.policyno = t1.policyno )
+  group by t.policyno
+  union all 
+  select * from lzm_danjiao ;
+  
+--明细表
+drop table lzm_result;
+create table lzm_result
+as 
+select  t.分公司,
+        t.使用性质,
+        t.座位,
+        t.吨位,
+        decode(t1.kindcode,'BZ','单交','1','含车损','不含车损') as 险别组合,
+        t.车型分类,
+        t.签单日期,
+        t.积分数
+ from lzm_tmp_car1 t
+  join lzm_xianbie t1
+  on t.policyno = t1.policyno;
+
+ --汇总
+ select t.policyno,sum(t.保费),sum(t.积分数) from lzm_tmp_car1 t group by t.policyno
+   

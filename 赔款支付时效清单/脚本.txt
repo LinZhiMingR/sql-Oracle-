@@ -1,0 +1,293 @@
+
+drop table alan_pay_rec;
+drop table alan_pay;
+drop table alan_pay_unique;
+drop table alan_pay_unique_r;
+drop table alan_pay_noBack;
+drop table alan_pay_back;
+drop table alan_pay_back_r;
+
+
+-- 1 取得支付清单
+create table alan_pay_rec
+as
+  select /*+ parallel(B 8) */
+         B.Certino, B.Payway, B.ReceiptName, B.Makecom, B.Realpaydate, B.Transtime, B.Currency, B.Payfee1, B.Currency2, B.Realpayfee
+  from   prpjrefrec B
+  where  B.Certitype in ('C', 'Y')
+  and    B.Realpaydate between date'2016-11-01' and date'2016-11-30';
+
+select * from alan_pay_rec;
+select count(*), count(distinct Certino) from alan_pay_rec;  -- 251616  244687
+
+create table alan_pay
+as
+  select /*+ parallel(B 8) */
+         A.Policyno, A.Certino, A.Serialno, A.Classcode, A.Payway as Payway_yw, B.Payway as Payway_sf, A.Coinsflag, B.ReceiptName, A.Comcode, B.Makecom,
+         to_date(to_char(B.Realpaydate, 'yyyy-mm-dd') || ' ' || B.Transtime, 'yyyy-mm-dd hh24:mi:ss') as Realpaydate,
+         A.Plan_Date_Created, B.Currency, B.Payfee1, B.Currency2, B.Realpayfee, A.Paybatchno
+  from   prpjplanfee A
+  join   alan_pay_rec B
+  on     A.Certino = B.Certino
+  where  A.Certitype in ('C', 'Y');
+
+insert into alan_pay
+  select /*+ parallel(B 8) */
+         A.Policyno, A.Certino, A.Serialno, A.Classcode, A.Payway as Payway_yw, B.Payway as Payway_sf, A.Coinsflag, B.ReceiptName, A.Comcode, B.Makecom,
+         to_date(to_char(B.Realpaydate, 'yyyy-mm-dd') || ' ' || B.Transtime, 'yyyy-mm-dd hh24:mi:ss') as Realpaydate,
+         A.Plan_Date_Created, B.Currency, B.Payfee1, B.Currency2, B.Realpayfee, A.Paybatchno
+  from   prpjplanfeehis A
+  join   alan_pay_rec B
+  on     A.Certino = B.Certino
+  where  A.Certitype in ('C', 'Y');
+
+select * from alan_pay where Paybatchno <> Certino;
+select count(*), count(distinct Certino) from alan_pay;  -- 251616  244687
+
+-- 2 去重
+create table alan_pay_unique
+as
+  select Certino,
+         max(Policyno)          as Policyno,
+         max(Classcode)         as Classcode,
+         max(Payway_yw)         as Payway_yw,
+         max(Payway_sf)         as Payway_sf,
+         max(Coinsflag)         as Coinsflag,
+         max(ReceiptName)       as ReceiptName,
+         max(Comcode)           as Comcode,
+         max(Makecom)           as Makecom,
+         max(Realpaydate)       as Realpaydate,
+         max(Plan_Date_Created) as Plan_Date_Created,
+         max(Currency)          as Currency,
+         sum(Payfee1)           as Payfee1,
+         max(Currency2)         as Currency2,
+         sum(Realpayfee)        as Realpayfee,
+         max(Paybatchno)        as Paybatchno
+  from   alan_pay
+  group by Certino;
+  
+select * from alan_pay_unique where Certino = 'CBBD201332011204000017';
+select count(*), count(distinct Certino) from alan_pay_unique;  -- 244687  244687
+
+---- 取得涉诉标识
+create table alan_pay_unique_r
+as
+  select /*+ parallel(A 8) */
+         A.*,
+         B.Lawsuitflag
+  from   alan_pay_unique A
+  left outer join
+         prplcompensate B
+  on     A.Certino = B.Compensateno;
+  
+select * from alan_pay_unique_r;
+select count(*) from alan_pay_unique_r;  -- 244687
+
+-- 3 无回退
+create table alan_pay_noBack
+as
+  select A.*, round(24 * (A.Realpaydate - A.Plan_Date_Created)) as PayHours
+  from   alan_pay_unique_r A
+  where  not exists
+         (
+          select 'X'
+          from   PrpJrefBatchCheck C
+          where  C.Certino = A.Certino or C.Certino = A.Paybatchno
+         );
+
+select * from alan_pay_noBack where certino = 'M20160001409656';
+select count(*) from alan_pay_noBack;  -- 233923
+
+---- 提取结果
+select A.Certino as 计算书号,
+       A.Policyno as 保单号,
+       A.Classcode as 险种代码,
+       A.Payway_yw as 业务支付方式,
+       A.Payway_sf as 收付支付方式,
+       A.Coinsflag as 联共保标志,
+       A.ReceiptName as 付款人,
+       A.Comcode as 业务归属机构代码,
+       A.Makecom as 付款机构代码,
+       A.Realpaydate as 支付确认时间,
+       A.Plan_Date_Created as 计算书流入收付费时间,
+       A.Currency as 应付币种,
+       A.Payfee1 as 应付金额,
+       A.Currency2 as 实付币种,
+       A.Realpayfee as 实付金额,
+       A.Lawsuitflag as 诉讼标志,
+       PayHours as 总支付时间
+from   alan_pay_noBack A;
+
+-- 4 有回退
+create table alan_pay_back
+as
+  select A.*,
+         B.Batchno, B.Certistatus, B.Editreason, B.Edittime, B.Modifytime
+  from   alan_pay_unique_r A
+  join   PrpJrefBatchCheck B
+  on     (A.Certino = B.Certino or A.Paybatchno = B.Certino)
+  where  A.Realpaydate >= B.Modifytime;
+
+select * from alan_pay_back;
+select count(*) from alan_pay_back;  -- 10959
+
+select Certino, count(*)
+from   alan_pay_back
+group by Certino
+having count(*) >= 2;
+
+select * from alan_pay_back where Certino = 'CBBD201332011204000017' order by edittime;
+select * from alan_pay where Certino = 'CDDB201531990053000095';
+
+---- 计算
+create table alan_pay_back_r
+as
+  select A.Certino,
+         A.Policyno,
+         A.Classcode,
+         A.Payway_yw,
+         A.Payway_sf,
+         A.Coinsflag,
+         A.ReceiptName,
+         A.Comcode,
+         A.Makecom,
+         A.Realpaydate,
+         A.Plan_Date_Created,
+         A.Currency,
+         A.Payfee1,
+         A.Currency2,
+         A.Realpayfee,
+         A.Lawsuitflag,
+         round(24 * (A.Realpaydate - A.Plan_Date_Created), 2) as PayHours,
+         round(24 * (A.Realpaydate - A.Plan_Date_Created - A.ywUsetime), 2) as cwPayHours,
+         round(24 * A.ywUsetime, 2) as ywPayHours,
+         case
+           when A.Edittime_z is null
+             then 0
+           when A.Edittime_f is null
+             then round(24 * (A.Realpaydate - A.Plan_Date_Created - A.ywUsetime), 2)
+           else round(24 * (A.Realpaydate - A.modifytime_f - A.ywUsetime_z), 2)
+         end as cwPayHours_z,
+         round(24 * A.ywUsetime_z, 2) as ywPayHours_z,
+         case
+           when A.Edittime_f is null
+             then 0
+           when A.Edittime_z is null
+             then round(24 * (A.Realpaydate - A.Plan_Date_Created - A.ywUsetime), 2)
+           else round(24 * (A.modifytime_f - A.Plan_Date_Created - A.ywUsetime_f), 2)
+         end as cwPayHours_f,
+         round(24 * A.ywUsetime_f, 2) as ywPayHours_f
+  from   (
+          select M.Certino,
+                 M.Policyno,
+                 M.Classcode,
+                 M.Payway_yw,
+                 M.Payway_sf,
+                 M.Coinsflag,
+                 M.ReceiptName,
+                 M.Comcode,
+                 M.Makecom,
+                 M.Realpaydate,
+                 nvl(M.Plan_Date_Created, min(M.Edittime)) as Plan_Date_Created,
+                 M.Currency,
+                 M.Payfee1,
+                 M.Currency2,
+                 M.Realpayfee,
+                 M.Lawsuitflag,
+                 sum(nvl(M.modifytime, M.edittime) - M.edittime) as ywUsetime,
+                 sum(
+                     case
+                       when M.Makecom like '3114%' and M.Edittime >= date'2014-01-01' then
+                         nvl(M.modifytime, M.edittime) - M.edittime
+                       else
+                         0
+                     end
+                     ) as ywUsetime_z,
+                 min(
+                     case
+                       when M.Makecom like '3114%' and M.Edittime >= date'2014-01-01' then
+                         M.edittime
+                       else
+                         null
+                     end
+                    ) as Edittime_z,
+                 max(
+                     case
+                       when M.Makecom like '3114%' and M.Edittime >= date'2014-01-01' then
+                         nvl(M.modifytime, M.edittime)
+                       else
+                         null
+                     end
+                    ) as modifytime_z,
+                 sum(
+                     case
+                       when M.Makecom not like '3114%' or M.Edittime < date'2014-01-01' then
+                         nvl(M.modifytime, M.edittime) - M.edittime
+                       else
+                         0
+                     end
+                     ) as ywUsetime_f,
+                 min(
+                     case
+                       when M.Makecom not like '3114%' or M.Edittime < date'2014-01-01' then
+                         M.edittime
+                       else
+                         null
+                     end
+                    ) as Edittime_f,
+                 max(
+                     case
+                       when M.Makecom not like '3114%' or M.Edittime < date'2014-01-01' then
+                         nvl(M.modifytime, M.edittime)
+                       else
+                         null
+                     end
+                    ) as modifytime_f
+          from   alan_pay_back M
+          group by
+                 M.Certino,
+                 M.Policyno,
+                 M.Classcode,
+                 M.Payway_yw,
+                 M.Payway_sf,
+                 M.Coinsflag,
+                 M.ReceiptName,
+                 M.Comcode,
+                 M.Makecom,
+                 M.Realpaydate,
+                 M.Plan_Date_Created,
+                 M.Currency,
+                 M.Payfee1,
+                 M.Currency2,
+                 M.Realpayfee,
+                 M.Lawsuitflag
+         ) A;
+
+select * from alan_pay_back_r;
+select count(*) from alan_pay_back_r;  -- 9810
+
+---- 提取结果
+select A.Certino as 计算书号,
+       A.Policyno as 保单号,
+       A.Classcode as 险种代码,
+       A.Payway_yw as 业务支付方式,
+       A.Payway_sf as 收付支付方式,
+       A.Coinsflag as 联共保标志,
+       A.ReceiptName as 付款人,
+       A.Comcode as 业务归属机构代码,
+       A.Makecom as 付款机构代码,
+       A.Realpaydate as 支付确认时间,
+       A.Plan_Date_Created as 计算书流入收付费时间,
+       A.Currency as 应付币种,
+       A.Payfee1 as 应付金额,
+       A.Currency2 as 实付币种,
+       A.Realpayfee as 实付金额,
+       A.Lawsuitflag as 诉讼标志,
+       PayHours as 总支付时间,
+       cwPayHours as 财务总支付时间,
+       ywPayHours as 业务总支付时间,
+       cwPayHours_z as 总公司财务时间,
+       ywPayHours_z as 总公司理赔时间,
+       cwPayHours_f as 分公司财务时间,
+       ywPayHours_f as 分公司理赔时间
+from   alan_pay_back_r A;

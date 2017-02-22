@@ -1,0 +1,235 @@
+drop table lzm_claim_prplclaim;
+drop table lzm_claim_claimloss;
+drop table lzm_claim_compensate;
+drop table lzm_claim_riskcode;
+drop table lzm_claim_gg1;
+drop table lzm_claim_claimdate;
+drop table lzm_claim_virtualclaim;
+drop table lzm_claim_list_old;
+
+--1 圈定立案
+create table lzm_claim_prplclaim
+as
+  select a.policyno
+         ,a.registno
+         ,a.claimno
+         ,a.riskcode
+         ,b.reportdate
+         ,b.reporthour
+         ,a.claimdate
+         ,a.recaseno
+         ,c.comname1
+         ,c.comname2
+  from   prplclaim a
+  join   prplregist b
+  on     a.registno = b.registno
+  left join
+         dimcompany c
+  on     a.comcode = c.comcode
+  where  a.claimdate between trunc(date'2016-08-31','yy') and date'2016-08-31';
+
+--2 区分商业险和交强险
+--2.1 估损
+create table lzm_claim_claimloss
+as
+  select distinct
+         a.claimno
+         ,case when b.kindcode = 'BZ' then 'U'||substr(a.riskcode,2,2) else a.riskcode end as riskcode
+  from   lzm_claim_prplclaim a
+  join   prplclaimloss b
+  on     a.claimno = b.claimno;
+  
+--2.2 计算书
+create table lzm_claim_compensate
+as
+  select distinct
+         a.claimno
+         ,case when substr(b.flag,4,1) = '1' then 'U'||substr(a.riskcode,2,2) else a.riskcode end as riskcode
+  from   lzm_claim_prplclaim a
+  join   prplcompensate b
+  on     a.claimno = b.claimno
+  and    b.underwriteflag in ('1','3');
+--2.3 整合  
+create table lzm_claim_riskcode
+as
+  select nvl(a.claimno,b.claimno) as claimno
+         ,nvl(a.riskcode,b.riskcode) as riskcode
+  from   lzm_claim_claimloss a
+  full join
+         lzm_claim_compensate b
+  on     a.claimno = b.claimno
+  and    a.riskcode = b.riskcode;
+  
+--3 盗抢险
+create table lzm_claim_gg1
+as
+  --估损
+  select a.claimno
+  from   prplclaimloss a
+  join   lzm_claim_prplclaim b
+  on     a.claimno = b.claimno
+  where  a.kindcode in ('G','G1')
+  --人员赔付信息表
+  union
+  select a.claimno
+  from   prplcompensate a
+  join   lzm_claim_prplclaim b
+  on     a.claimno = b.claimno
+  join   prplpersonloss c
+  on     a.compensateno = c.compensateno
+  where  c.kindcode in ('G','G1')
+  and    a.underwriteflag in ('1','3')
+  --赔付标的信息表
+  union
+  select a.claimno
+  from   prplcompensate a
+  join   lzm_claim_prplclaim b
+  on     a.claimno = b.claimno
+  join   prplloss c
+  on     a.compensateno = c.compensateno
+  where  c.kindcode in ('G','G1')
+  and    a.underwriteflag in ('1','3')
+  --赔款费用信息表
+  union
+  select a.claimno
+  from   prplcompensate a
+  join   lzm_claim_prplclaim b
+  on     a.claimno = b.claimno
+  join   prplcharge c
+  on     a.compensateno = c.compensateno
+  where  c.kindcode in ('G','G1')
+  and    a.underwriteflag in ('1','3');
+  
+-- 4 立案时间（到时分秒）
+create table lzm_claim_claimdate
+as
+  select /*+parallel(a 8)*/
+         a.businessno
+         ,a.submittime
+  from   swflog a
+  where  a.nodetype = 'claim'
+  and    a.nodestatus = '4'
+  and exists (select 'x' from lzm_claim_prplclaim b where a.businessno = b.claimno)
+  union
+  select /*+full(a) parallel(a 8)*/
+         a.businessno
+         ,a.submittime
+  from   swflogstore a
+  where  a.nodetype = 'claim'
+  and    a.nodestatus = '4'
+  and exists (select 'x' from lzm_claim_prplclaim b where a.businessno = b.claimno);
+
+--5 注销拒赔恢复案件
+create table lzm_claim_virtualclaim
+as
+  select distinct a.claimno
+  from   prplvirtualclaim a
+  join   lzm_claim_prplclaim b
+  on     a.claimno = b.claimno
+  where  a.validstatus in ('8','7');
+
+--6 提取结果：老理赔立案
+create table lzm_claim_list_old
+as
+  select 
+         '0000102016'||lpad(lzm_seq_01.nextval,10,0) as 主键
+         ,a.policyno as 保单号
+         ,a.registno as 报案号
+         ,a.claimno as 立案号
+         ,a.riskcode as 险种代码
+         ,decode(substr(b.riskcode,1,1)
+                  ,'A','08000'
+                  ,'B','12200'
+                  ,'C','05000'
+                  ,'D','01100'
+                  ,'E','16000'
+                  ,'F','99000'
+                  ,'G','06000'
+                  ,'H','09000'
+                  ,'I','09000'
+                  ,'J','03000'
+                  ,'K','08000'
+                  ,'L','02000'
+                  ,'M','09000'
+                  ,'N','08000'
+                  ,'O','08000'
+                  ,'P','99000'
+                  ,'Q','02000'
+                  ,'R','99000'
+                  ,'S','02000'
+                  ,'T','02000'
+                  ,'X','12100'
+                  ,'Y','04000'
+                  ,'Z','11000'
+                  ,'W','15000'
+                  ,'V','15000'
+                  ,'8','15000'
+                  ,'U','01200'
+                  ,'0','99000'
+                  ,'9','15000'
+                  ,'1','99000'
+                  ,'2','99000'
+                  ,'3','99000')as 案件险种类型代码
+         ,to_char(to_date(to_char(a.reportdate, 'yyyy-mm-dd') || ' ' || a.reporthour, 'yyyy-mm-dd hh24:mi:ss'), 'yyyy-mm-dd hh24:mi:ss') as 报案时间
+         ,case when d.businessno is null
+               then to_char(a.claimdate,'yyyy-mm-dd hh24:mi:ss')
+               else d.submittime
+          end as 立案时间
+         ,case when c.claimno is not null then '01' else '00' end as 是否盗抢
+         ,case when e.claimno is not null or a.recaseno > 0 then '01' else '00' end as 是否重开案件
+         ,'000010'as 法人机构代码
+         ,case
+            when a.comname1 ='广东' and a.comname2 ='深圳分公司' then '440300'
+            when a.comname1 ='福建' and a.comname2 ='厦门分公司' then '350200'
+            when a.comname1 ='山东' and a.comname2 ='青岛分公司' then '370200'
+            when a.comname1 ='浙江' and a.comname2 ='宁波分公司' then '330200'
+            when a.comname1 ='辽宁' and a.comname2 ='大连分公司' then '210200'
+            when a.comname1 ='北京'  then '110000'
+            when a.comname1 ='天津'  then '120000'
+            when a.comname1 ='河北'  then '130000'
+            when a.comname1 ='山西'  then '140000'
+            when a.comname1 ='内蒙古'  then '150000'
+            when a.comname1 ='辽宁'  then '210000'
+            when a.comname1 ='吉林'  then '220000'
+            when a.comname1 ='黑龙江'  then '230000'
+            when a.comname1 ='上海'  then '310000'
+            when a.comname1 ='江苏'  then '320000'
+            when a.comname1 ='浙江'  then '330000'
+            when a.comname1 ='安徽'  then '340000'
+            when a.comname1 ='福建'  then '350000'
+            when a.comname1 ='江西'  then '360000'
+            when a.comname1 ='山东'  then '370000'
+            when a.comname1 ='河南'  then '410000'
+            when a.comname1 ='湖北'  then '420000'
+            when a.comname1 ='湖南'  then '430000'
+            when a.comname1 ='广东'  then '440000'
+            when a.comname1 ='广西'  then '450000'
+            when a.comname1 ='海南'  then '460000'
+            when a.comname1 ='重庆'  then '500000'
+            when a.comname1 ='四川'  then '510000'
+            when a.comname1 ='贵州'  then '520000'
+            when a.comname1 ='云南'  then '530000'
+            when a.comname1 ='西藏'  then '540000'
+            when a.comname1 ='陕西'  then '610000'
+            when a.comname1 ='甘肃'  then '620000'
+            when a.comname1 ='青海'  then '630000'
+            when a.comname1 ='宁夏'  then '640000'
+            when a.comname1 ='新疆'  then '650000'
+          end as 监管辖区代码
+  from   lzm_claim_prplclaim a
+  left join
+         lzm_claim_riskcode b
+  on     a.claimno = b.claimno
+  left join
+         lzm_claim_gg1 c
+  on     a.claimno = c.claimno
+  and    substr(b.riskcode,1,1) = 'D'
+  left join
+         lzm_claim_claimdate d
+  on     a.claimno = d.businessno
+  left join
+         lzm_claim_virtualclaim e
+  on     a.claimno = e.claimno;
+  
+update lzm_claim_list_old t set t.立案时间 = t.报案时间 where 立案时间 < 报案时间;
+commit;

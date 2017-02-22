@@ -1,0 +1,223 @@
+drop table lzm_ssbf;
+create table lzm_ssbf
+as 
+select t.policyno as 保单号,
+       null as 批单号,
+       t.classcode as 险类代码,
+       t.riskcode as 险种代码,
+       t.businessnature  as 业务来源1代码,
+       t2.businessnaturename as 业务来源1名称,
+       nvl(t.Businessnature2, t.Businessnature) as 业务来源2代码,
+       t2.businessnaturename as 业务来源2名称,
+       t.Appliname as 投保人名称,
+       t.insuredname as 被保险人名称,
+        as 缴费人名称,
+       t5.agentname as 中介机构名称,
+       t.comcode as 归属机构代码,
+       t3.comname as 归属机构名称,
+       t.Handler1code as 归属业务员代码,
+       t4.username as 归属业务员名称,
+       B.realpaydate as 实收日期,
+       b.cnyrealpayfee 实收保费,
+       b.vatrealpayfee  as 税
+  from cgcmain t
+  left join cg_dim_busi t2
+    on t.businessnature = t2.businessnature
+  left join dimcompany t3
+    on t.comcode = t3.comcode
+  left join dimuser t4
+    on t.handler1code = t4.usercode
+  left join dimagent t5
+    on t.agentcode = t5.agentcode
+  join cgjcmain B
+    on  t.Policyno = B.Policyno
+ where B.realpaydate between date '2017-01-01' and date
+ '2017-01-19'
+   and t.comcode like '5301%'
+  and    B.cnyrealpayfee <> 0
+union
+select t.policyno as 保单号,
+       t.EndorseNo as 批单号,
+       t.classcode as 险类代码,
+       t.riskcode as 险种代码,
+       t.businessnature  as 业务来源1代码,
+       t2.businessnaturename as 业务来源1名称,
+       nvl(t.Businessnature2, t.Businessnature) as 业务来源2代码,
+       t2.businessnaturename as 业务来源2名称,
+       t.Appliname as 投保人名称,
+       t.insuredname as 被保险人名称,
+        as 缴费人名称,
+       t5.agentname as 中介机构名称,
+       t.comcode as 归属机构代码,
+       t3.comname as 归属机构名称,
+       t.Handler1code as 归属业务员代码,
+       t4.username as 归属业务员名称,
+       B.realpaydate as 实收日期,
+       decode(substr(B.payreason, 1, 1), 'R', B.cnyrealpayfee, - B.cnyrealpayfee) as 实收保费,
+       decode(substr(B.payreason, 1, 1), 'R', b.vatrealpayfee, - b.vatrealpayfee) as 税
+  from cgpmain t
+  left join cg_dim_busi t2
+    on t.businessnature = t2.businessnature
+  left join dimcompany t3
+    on t.comcode = t3.comcode
+  left join dimuser t4
+    on t.handler1code = t4.usercode
+  left join dimagent t5
+    on t.agentcode = t5.agentcode
+  join cgjpmain B
+    on t.endorseno = B.endorseno
+ where B.realpaydate between date '2017-01-01' and date'2017-01-19'
+   and t.comcode like '5301%'
+   and B.cnyrealpayfee <> 0
+union all 
+select t.policyno as 保单号,
+       null as 批单号,
+       t.classcode as 险类代码,
+       t.riskcode as 险种代码,
+       t.businessnaturecode  as 业务来源1代码,
+       t2.businessnaturename as 业务来源1名称,
+       nvl(t.Businessnature2, t.Businessnaturecode) as 业务来源2代码,
+       t2.businessnaturename as 业务来源2名称,
+       t.Appliname as 投保人名称,
+       t.insuredname as 被保险人名称,
+        as 缴费人名称,
+       t5.agentname as 中介机构名称,
+       t.comcode as 归属机构代码,
+       t3.comname as 归属机构名称,
+       t.Handler1code as 归属业务员代码,
+       t4.username as 归属业务员名称,
+       B.realpaydate as 实收日期,
+       b.cnyrealpayfee as 实收保费,
+       b.vatrealpayfee as 税
+  from cgcmaincar t
+  left join cg_dim_busi t2
+    on t.Businessnaturecode = t2.businessnature
+  left join dimcompany t3
+    on t.comcode = t3.comcode
+  left join dimuser t4
+    on t.handler1code = t4.usercode
+  left join dimagent t5
+    on t.agentcode = t5.agentcode
+  join cgjcmaincar B
+   on  t.Policyno = B.Policyno
+ where B.realpaydate between date '2017-01-01' and date
+ '2017-01-19'
+   and t.comcode like '5301%'
+   and  B.cnyrealpayfee <> 0
+union
+select t.policyno as 保单号,
+       t.Endorseno as 批单号,
+       t.classcode as 险类代码,
+       t.riskcode as 险种代码,
+       t.businessnaturecode  as 业务来源1代码,
+       t2.businessnaturename as 业务来源1名称,
+       nvl(t.Businessnature2, t.Businessnaturecode) as 业务来源2代码,
+       t2.businessnaturename as 业务来源2名称,
+       t.Appliname as 投保人名称,
+       t.insuredname as 被保险人名称,
+        as 缴费人名称,
+       t5.agentname as 中介机构名称,
+       t.comcode as 归属机构代码,
+       t3.comname as 归属机构名称,
+       t.Handler1code as 归属业务员代码,
+       t4.username as 归属业务员名称,
+       B.realpaydate as 实收日期,
+       decode(substr(B.payreason, 1, 1), 'R', B.cnyrealpayfee, - B.cnyrealpayfee) as 实收保费,
+       decode(substr(B.payreason, 1, 1), 'R', b.vatrealpayfee, - b.vatrealpayfee) as 税
+  from cgpmaincar t
+  left join cg_dim_busi t2
+    on t.Businessnaturecode = t2.businessnature
+  left join dimcompany t3
+    on t.comcode = t3.comcode
+  left join dimuser t4
+    on t.handler1code = t4.usercode
+  left join dimagent t5
+    on t.agentcode = t5.agentcode
+  join cgjpmaincar B
+    on t.endorseno = B.endorseno
+ where B.realpaydate between date '2017-01-01' and date'2017-01-19'
+   and t.comcode like '5301%'
+   and B.cnyrealpayfee <> 0;
+
+--缴费人名称
+drop table lzm_jfr_name;
+create table lzm_jfr_name
+as
+select distinct certino,ReceiptName
+from(select t1.certino, ReceiptName
+  from prpjpayrechis@ccicdb t1
+  join LZM_SSBF t
+    on t.保单号 = t1.certino
+ where t.批单号 is null
+union all
+select t1.certino, ReceiptName
+  from prpjpayrechis@ccicdb t1
+  join LZM_SSBF t
+    on t.批单号 = t1.certino
+ where t.批单号 is not null
+union all
+select t1.certino, ReceiptName
+  from prpjpayrec@ccicdb t1
+  join LZM_SSBF t
+    on t.保单号 = t1.certino
+ where t.批单号 is null
+union all
+select t1.certino, ReceiptName
+  from prpjpayrec@ccicdb t1
+  join LZM_SSBF t
+    on t.批单号 = t1.certino
+ where t.批单号 is not null);
+
+
+--最终表
+drop table lzm_result_ssbf;
+create table lzm_result_ssbf
+as 
+select t.保单号,
+       t.批单号,
+       t.险类代码,
+       t.险种代码,
+       t.业务来源1代码,
+       t.业务来源1名称,
+       t.业务来源2代码,
+       t.业务来源2名称,
+       t.投保人名称,
+       t.被保险人名称,
+       t1.receiptname as 缴费人名称,
+       t.中介机构名称,
+       t.归属机构代码,
+       t.归属机构名称,
+       t.归属业务员代码,
+       t. 归属业务员名称,
+       t.实收日期,
+       t.实收保费,
+       t.税
+from lzm_ssbf t
+left join lzm_jfr_name t1
+ on t.保单号 = t1.certino 
+ where t.批单号 is null
+ union 
+ select t.保单号,
+       t.批单号,
+       t.险类代码,
+       t.险种代码,
+       t.业务来源1代码,
+       t.业务来源1名称,
+       t.业务来源2代码,
+       t.业务来源2名称,
+       t.投保人名称,
+       t.被保险人名称,
+       t1.receiptname as 缴费人名称,
+       t.中介机构名称,
+       t.归属机构代码,
+       t.归属机构名称,
+       t.归属业务员代码,
+       t.归属业务员名称,
+       t.实收日期,
+       t.实收保费,
+       t.税
+from lzm_ssbf t
+left join lzm_jfr_name t1
+ on t.保单号 = t1.certino 
+ where t.批单号 is not null
+
